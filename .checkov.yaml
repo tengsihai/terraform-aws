@@ -1,0 +1,20 @@
+# Checkov configuration for the network stack.
+#
+# There are deliberately NO blanket skips here. Every suppression is an inline
+# `#checkov:skip=<check-id>:<reason>` comment on the affected resource, so a
+# reviewer sees the justification at the exact place it applies.
+
+framework:
+  - terraform
+
+compact: true
+quiet: true
+
+# All modules are local; do not try to fetch anything from the internet.
+download-external-modules: false
+
+skip-path:
+  - .terraform
+  - .git
+  - reports
+  - plans

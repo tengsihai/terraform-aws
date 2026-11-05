@@ -1,0 +1,145 @@
+# 架构说明
+
+## 1. 总览
+
+每个环境是一个独立的 Terraform 根目录，只做两件事：调用 `logging-s3` 模块建加密日志桶，
+调用 `vpc` 模块建网络。业务负载不在本仓库范围内，但通过模块输出去消费网络。
+
+```
+                         Internet
+                            │
+                   ┌────────┴────────┐
+                   │   Internet GW   │
+                   └────────┬────────┘
+        ┌───────────────────┼───────────────────┐
+        │                   │                   │
+   ┌────┴────┐         ┌────┴────┐         ┌────┴────┐   AZ-a / AZ-c / AZ-d
+   │ public  │         │ public  │         │ public  │   map_public_ip_on_launch = false
+   │  /20    │         │  /20    │         │  /20    │
+   └────┬────┘         └────┬────┘         └────┬────┘
+        │  public RT: 0.0.0.0/0 → IGW, ::/0 → IGW
+        │                   │                   │
+        │   ┌───────────────┴───────────────┐   │
+        │   │      S3 Gateway Endpoint      │   │   ← 挂在公网 + 3 张私网路由表
+        │   └───────────────────────────────┘   │
+        │                   │                   │
+   ┌────┴────┐         ┌────┴────┐         ┌────┴────┐
+   │ private │         │ private │         │ private │   每 AZ 一张独立私网路由表
+   │  /20    │         │  /20    │         │  /20    │   ❌ 没有 0.0.0.0/0
+   └────┬────┘         └────┬────┘         └────┬────┘      ::/0 → Egress-only IGW
+        │                   │                   │
+        └───────── 无 NAT 网关 / 无 IPv4 出网 ───┘
+```
+
+## 2. 地址规划
+
+所有环境使用 `10.X.0.0/16`，第三段由环境固定（dev=10、staging=20、prod=30）。
+
+| 层级 | AZ-a | AZ-c | AZ-d | 大小 |
+| --- | --- | --- | --- | --- |
+| public | `10.X.0.0/20` | `10.X.16.0/20` | `10.X.32.0/20` | 各 4094 可用 |
+| private | `10.X.128.0/20` | `10.X.144.0/20` | `10.X.160.0/20` | 各 4094 可用 |
+
+公网与私网段刻意留出 `10.X.64.0/18` 的空档，后续要加第三层（如隔离区）不需要重新划段。
+
+### IPv6
+
+- VPC 申请 AWS 生成的 **/56**（`assign_generated_ipv6_cidr_block = true`）
+- 每个子网用 `cidrsubnet(vpc_ipv6, 8, netnum)` 切出一个 **/64**，`netnum` 显式配置：
+  - 公网 `[0,1,2]`，私网 `[8,9,10]`，中间留空便于扩展
+- 公网子网 `::/0 → IGW`；私网子网 `::/0 → Egress-only IGW`（只出不进，免费）
+- `assign_ipv6_address_on_creation` 默认 `false`：地址按 ENI 显式分配，避免隐式暴露
+
+## 3. 为什么没有 NAT 网关
+
+这是需求侧的硬约束，也带来真实的代价，必须理解清楚再使用：
+
+**得到什么**
+
+- 私网子网彻底没有到公网 IPv4 的路径，出网泄漏面为零
+- 没有每 AZ 的 NAT 固定费用和按 GB 处理费
+- 没有 NAT 实例 / 网关本身需要打补丁、监控、限流的运维面
+
+**付出什么**
+
+- 私网实例**无法访问任何公网 IPv4 地址**：不能直接 `yum/apt`、不能访问外网 API、
+  不能访问公网 SaaS
+- 访问 AWS 服务必须走 VPC 终端节点：
+  - **S3**：已通过网关端点覆盖（免费）
+  - **其他服务**（SSM、ECR、CloudWatch Logs、STS、KMS…）：需要 Interface 端点，
+    每个 AZ 每小时计费 + 数据处理费
+- 如果需要访问第三方公网 API，只能：
+  1. 打开对应的 Interface 端点（仅限 AWS 服务）
+  2. 通过 Transit Gateway 把流量送到集中式 egress VPC（不在本仓库范围）
+  3. 在公网子网放代理，但这会把公网暴露面加回来
+
+`interface_endpoint_services` 变量为此预留：默认空，按需填 `["ssm","ssmmessages","ec2messages"]` 之类。
+不启用时，私网实例无法使用 SSM Session Manager，也无法拉取 ECR 镜像。
+
+## 4. VPC 终端节点
+
+| 端点 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| S3 | Gateway | 启用 | 挂在公网表 + 3 张私网表；免费 |
+| 其他 | Interface | 关闭 | 由 `interface_endpoint_services` 控制 |
+
+S3 网关端点策略只授予数据面动作（`Get/Put/List/Delete`），资源范围是全分区 S3。
+这不是授权边界——真正的鉴权由 IAM identity policy 和桶策略决定；端点策略若按单桶收窄，
+会让账户里其他工作负载的 S3 访问静默失败，所以这里刻意保持数据面级别。
+
+Interface 端点共用一张安全组：入站只允许 VPC 的 IPv4/IPv6 网段访问 443，出站只回 VPC 网段。
+
+## 5. 安全组模型
+
+1. **default SG 被接管并清空**（`aws_default_security_group` 不带任何规则）。
+   任何忘记指定 SG 的 ENI 都不会继承隐式放行规则。
+2. **禁止公网入站**由两层保证：
+   - 变量校验：`additional_security_groups` 的任一条 ingress 只要包含 `0.0.0.0/0`
+     或 `::/0`，`terraform plan` 直接失败并给出明确错误
+   - 模块自身写的规则：接口端点 SG 只允许 `var.vpc_cidr` 和 VPC 的 IPv6 段
+3. 所有规则必须带 `description`（Checkov CKV_AWS_23）。
+4. 出站默认收窄到 VPC 网段，不存在 `0.0.0.0/0` 出站。
+5. `map_public_ip_on_launch = false`，公网子网不隐式发公网 IP。
+
+## 6. 日志与审计
+
+| 日志 | 位置 | 加密 | 保留 |
+| --- | --- | --- | --- |
+| VPC flow logs | CloudWatch `/aws/vpc/<name>/flow-logs` | 专用 CMK（自动轮转） | dev 30 / staging 90 / prod 365 天 |
+| VPC flow logs（第二份） | S3 日志桶 `AWSLogs/<account>/` | SSE-KMS | 跟随桶生命周期 |
+| S3 访问日志 | 同桶 `access-logs/` | SSE-KMS | 跟随桶生命周期 |
+| S3 Object Lock | 未启用 | — | — |
+
+flow log 使用自定义字段格式（含 `tcp-flags`、`pkt-srcaddr`、`pkt-dstaddr`），
+聚合间隔 60 秒——安全排查需要近实时，600 秒会明显拖慢定位。
+
+S3 日志桶的访问日志**写到桶自身**。这是刻意选择：审计线索不能依赖另一个可能被误删或误配的桶。
+
+## 7. 模块边界
+
+```
+environments/<env>
+   ├── module.logging  (modules/logging-s3)  → bucket_arn
+   └── module.vpc      (modules/vpc)         → vpc_id, subnet_ids, ...
+```
+
+- `logging-s3` 完全不知道 VPC 的存在，只暴露 `bucket_arn`。
+- `vpc` 通过 `flow_logs_s3_bucket_arn` + `flow_logs_s3_enabled` 接收投递目标。
+  两个参数必须分开：`count` 只能依赖 plan 期已知值，而桶 ARN 要等到 apply 后才确定。
+- 环境层用 `depends_on = [module.logging]` 保证桶策略和 KMS 授权先于 flow log 创建，
+  否则 AWS 会在校验 flow log 目标时拒绝。
+
+## 8. 变更流程
+
+```
+编辑代码/变量
+   │
+   ├─ make validate  → fmt + validate（不连 AWS）
+   ├─ make scan      → checkov + 高危门禁
+   └─ make plan      → 生成 reports/<env>/plan-<ts>.tfplan
+                          │
+                          ├─ 人工对照 docs/PLAN-CHECKLIST.md 逐项核对
+                          └─ 审批人手工 apply 该 plan 文件
+```
+
+自动化链路上不存在任何写操作入口。

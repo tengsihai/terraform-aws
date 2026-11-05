@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars (git-ignored) and fill in real values.
+
+github_owner = "tengsihai"
+github_repo  = "terraform-aws"
+
+state_bucket_name = "platform-terraform-state-790354569983-ap-northeast-1"
+# state_kms_key_arn = "arn:aws:kms:ap-northeast-1:790354569983:key/REPLACE-ME"
+
+# Only dev is provisioned for now. Adding staging/prod later means editing this
+# list and re-applying, so their roles and trust policies get created.
+environments = ["dev"]
+
+# Uncomment when the account already has the GitHub OIDC provider.
+# create_oidc_provider = false
+# oidc_provider_arn    = "arn:aws:iam::790354569983:oidc-provider/token.actions.githubusercontent.com"

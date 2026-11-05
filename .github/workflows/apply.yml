@@ -1,0 +1,275 @@
+name: Terraform apply
+
+# Human-approved apply of an already-reviewed plan.
+#
+# Properties that make this safe:
+#   * dispatch only from main
+#   * the job targets a protected GitHub Environment (required reviewers), so it
+#     pauses until a human approves
+#   * the plan run must be a successful `plan.yml` run on main whose commit is
+#     still main's HEAD
+#   * the artifact checksum, environment and commit are re-verified before apply
+#   * the plan must be younger than PLAN_MAX_AGE_HOURS
+#   * Terraform applies the saved plan file; it never re-plans
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to apply.
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+        required: true
+      plan_run_id:
+        description: Run ID of the successful "Terraform plan" run on main to apply.
+        type: string
+        required: true
+      confirmation:
+        description: Retype the environment name (dev/staging/prod) to confirm.
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write # GitHub OIDC -> AWS role
+  actions: read # download the plan artifact from another run
+
+# Never cancel an apply halfway through: a partially applied plan is worse than
+# a queued one.
+concurrency:
+  group: terraform-apply-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  TERRAFORM_VERSION: "1.13.5"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "0"
+  PLAN_MAX_AGE_HOURS: "24"
+
+jobs:
+  apply:
+    name: apply (${{ inputs.environment }})
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      inputs.confirmation == inputs.environment &&
+      contains(fromJSON(vars.TF_ENVIRONMENTS || '["dev"]'), inputs.environment)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Required reviewers on dev/staging/prod turn this into a human approval gate.
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Validate input
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          case "${ENVIRONMENT}" in
+            dev | staging | prod) ;;
+            *)
+              echo "::error::unsupported environment '${ENVIRONMENT}'"
+              exit 1
+              ;;
+          esac
+
+      - name: Resolve and verify the plan run
+        id: plan_run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+        run: |
+          set -euo pipefail
+
+          if ! [[ "${PLAN_RUN_ID}" =~ ^[0-9]+$ ]]; then
+            echo "::error::plan_run_id must be numeric"
+            exit 1
+          fi
+
+          api="repos/${GITHUB_REPOSITORY}/actions/runs/${PLAN_RUN_ID}"
+          if ! run_json="$(gh api "${api}" 2>/dev/null)"; then
+            echo "::error::run ${PLAN_RUN_ID} not found in ${GITHUB_REPOSITORY}"
+            exit 1
+          fi
+
+          status="$(jq -r '.status' <<<"${run_json}")"
+          conclusion="$(jq -r '.conclusion' <<<"${run_json}")"
+          event="$(jq -r '.event' <<<"${run_json}")"
+          branch="$(jq -r '.head_branch' <<<"${run_json}")"
+          sha="$(jq -r '.head_sha' <<<"${run_json}")"
+          workflow_path="$(jq -r '.path' <<<"${run_json}")"
+
+          if [ "${status}" != "completed" ] || [ "${conclusion}" != "success" ]; then
+            echo "::error::plan run ${PLAN_RUN_ID} finished as ${status}/${conclusion}; only successful runs can be applied"
+            exit 1
+          fi
+
+          case "${event}" in
+            push | workflow_dispatch) ;;
+            *)
+              echo "::error::plan run ${PLAN_RUN_ID} came from '${event}'; only push/workflow_dispatch runs on main are accepted"
+              exit 1
+              ;;
+          esac
+
+          if [ "${branch}" != "main" ]; then
+            echo "::error::plan run ${PLAN_RUN_ID} ran on '${branch}', not main"
+            exit 1
+          fi
+
+          if [ "${workflow_path}" != ".github/workflows/plan.yml" ]; then
+            echo "::error::run ${PLAN_RUN_ID} was produced by '${workflow_path}', not the plan workflow"
+            exit 1
+          fi
+
+          main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [ "${sha}" != "${main_sha}" ]; then
+            echo "::error::main moved since this plan was produced (plan ${sha:0:12}, main ${main_sha:0:12}). Re-run the plan workflow on the current main."
+            exit 1
+          fi
+
+          {
+            echo "head_sha=${sha}"
+            echo "plan_url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${PLAN_RUN_ID}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout the exact commit that produced the plan
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.plan_run.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: Download the plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan-${{ inputs.environment }}
+          run-id: ${{ inputs.plan_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/plan
+
+      - name: Verify the plan artifact
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          PLAN_DIR: ${{ runner.temp }}/plan
+          EXPECTED_SHA: ${{ steps.plan_run.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          cd "${PLAN_DIR}"
+
+          for required in tfplan plan.txt plan.json manifest.txt; do
+            [ -f "${required}" ] || { echo "::error::artifact is missing ${required}"; exit 1; }
+          done
+
+          expected_sum="$(sed -n 's/^plan_sha256=//p' manifest.txt)"
+          actual_sum="$(sha256sum tfplan | awk '{print $1}')"
+          if [ "${expected_sum}" != "${actual_sum}" ]; then
+            echo "::error::plan checksum mismatch (manifest ${expected_sum}, file ${actual_sum})"
+            exit 1
+          fi
+
+          manifest_env="$(sed -n 's/^environment=//p' manifest.txt)"
+          if [ "${manifest_env}" != "${ENVIRONMENT}" ]; then
+            echo "::error::artifact targets '${manifest_env}', not '${ENVIRONMENT}'"
+            exit 1
+          fi
+
+          manifest_sha="$(sed -n 's/^commit_sha=//p' manifest.txt)"
+          if [ "${manifest_sha}" != "${EXPECTED_SHA}" ]; then
+            echo "::error::artifact was planned from ${manifest_sha}, expected ${EXPECTED_SHA}"
+            exit 1
+          fi
+
+          created="$(sed -n 's/^created_at=//p' manifest.txt)"
+          created_epoch="$(date -u -d "${created}" +%s)"
+          age_hours=$(( ($(date -u +%s) - created_epoch) / 3600 ))
+          if [ "${age_hours}" -gt "${PLAN_MAX_AGE_HOURS}" ]; then
+            echo "::error::plan is ${age_hours}h old (limit ${PLAN_MAX_AGE_HOURS}h); re-run the plan workflow"
+            exit 1
+          fi
+
+          if [ "$(jq -r '.applyable // false' plan.json)" != "true" ]; then
+            echo "::error::plan is not applyable (it was not a clean, error-free plan)"
+            exit 1
+          fi
+
+          echo "plan verified: ${age_hours}h old, sha256 ${actual_sum}"
+
+      - name: Terraform init
+        id: init
+        uses: ./.github/actions/terraform-init
+        with:
+          environment: ${{ inputs.environment }}
+          role-arn: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          state-bucket: ${{ vars.TF_STATE_BUCKET }}
+          state-kms-key-arn: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+          terraform-version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Confirm account matches env.tfvars
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          ACTUAL_ACCOUNT: ${{ steps.init.outputs.account-id }}
+        run: |
+          set -euo pipefail
+          expected="$(sed -nE \
+            's/^[[:space:]]*aws_account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*/\1/p' \
+            "environments/${ENVIRONMENT}/env.tfvars" | head -1)"
+          if [ "${expected}" != "${ACTUAL_ACCOUNT}" ]; then
+            echo "::error::env.tfvars account ${expected} != assumed role account ${ACTUAL_ACCOUNT}"
+            exit 1
+          fi
+
+      - name: terraform apply (saved plan only)
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          PLAN_FILE: ${{ runner.temp }}/plan/tfplan
+        run: |
+          set -euo pipefail
+          # This applies the reviewed plan artifact. It does not re-plan, so what
+          # the reviewer approved is exactly what runs.
+          terraform -chdir="environments/${ENVIRONMENT}" apply \
+            -input=false \
+            -no-color \
+            -auto-approve \
+            -lock-timeout=5m \
+            "${PLAN_FILE}"
+
+      - name: Write run summary
+        if: always()
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          PLAN_URL: ${{ steps.plan_run.outputs.plan_url }}
+          PLAN_DIR: ${{ runner.temp }}/plan
+        run: |
+          {
+            echo "## Apply ${ENVIRONMENT}"
+            echo ""
+            echo "- Reviewed plan: ${PLAN_URL}"
+            echo "- Commit: \`${{ steps.plan_run.outputs.head_sha }}\`"
+            echo "- Plan checksum: \`$(sed -n 's/^plan_sha256=//p' "${PLAN_DIR}/manifest.txt" 2>/dev/null || echo unknown)\`"
+            echo ""
+            echo "<details><summary>Applied plan</summary>"
+            echo ""
+            echo '```'
+            head -c 40000 "${PLAN_DIR}/plan.txt" 2>/dev/null || true
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload apply log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apply-${{ inputs.environment }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/plan/
+          retention-days: 30
+          if-no-files-found: ignore

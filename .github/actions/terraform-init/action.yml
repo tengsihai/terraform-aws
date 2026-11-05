@@ -1,0 +1,89 @@
+name: Terraform init with OIDC and S3 backend
+
+description: >-
+  Installs the Terraform CLI, assumes an AWS role through GitHub OIDC
+  (no long-lived keys), resolves the caller identity, and initialises the S3
+  backend for one environment.
+
+  Callers must grant `id-token: write` and `contents: read` at the job level.
+
+inputs:
+  environment:
+    description: Environment root to initialise (dev | staging | prod).
+    required: true
+  role-arn:
+    description: IAM role ARN assumed via the GitHub OIDC provider.
+    required: true
+  aws-region:
+    description: AWS region of the state bucket and resources.
+    required: true
+  state-bucket:
+    description: S3 bucket holding the remote state.
+    required: true
+  state-kms-key-arn:
+    description: Optional KMS key ARN used to encrypt the state object.
+    required: false
+    default: ""
+  terraform-version:
+    description: Terraform CLI version.
+    required: false
+    default: "1.13.5"
+
+outputs:
+  account-id:
+    description: AWS account ID the assumed role belongs to.
+    value: ${{ steps.identity.outputs.account-id }}
+  role-arn:
+    description: ARN of the role actually assumed.
+    value: ${{ steps.creds.outputs.aws-role-arn }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        # The wrapper masks real exit codes, which breaks -detailed-exitcode.
+        terraform_wrapper: false
+
+    - name: Assume role via GitHub OIDC
+      id: creds
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.role-arn }}
+        aws-region: ${{ inputs.aws-region }}
+        role-session-name: gha-terraform-${{ inputs.environment }}
+        mask-aws-account-id: false
+
+    - name: Resolve caller identity
+      id: identity
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "account-id=$(aws sts get-caller-identity --query Account --output text)" >> "${GITHUB_OUTPUT}"
+
+    - name: terraform init
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+        STATE_BUCKET: ${{ inputs.state-bucket }}
+        STATE_KMS_KEY_ARN: ${{ inputs.state-kms-key-arn }}
+        STATE_REGION: ${{ inputs.aws-region }}
+      run: |
+        set -euo pipefail
+
+        backend_args=(
+          "-backend-config=bucket=${STATE_BUCKET}"
+          "-backend-config=key=network/${ENVIRONMENT}/terraform.tfstate"
+          "-backend-config=region=${STATE_REGION}"
+          "-backend-config=encrypt=true"
+          "-backend-config=use_lockfile=true"
+        )
+
+        if [ -n "${STATE_KMS_KEY_ARN}" ]; then
+          backend_args+=("-backend-config=kms_key_id=${STATE_KMS_KEY_ARN}")
+        fi
+
+        terraform -chdir="environments/${ENVIRONMENT}" init \
+          -reconfigure -input=false -no-color "${backend_args[@]}"

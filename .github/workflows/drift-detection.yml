@@ -1,0 +1,144 @@
+name: Drift detection
+
+# Read-only. Runs a plan against the real backend and reports drift. It never
+# applies and never has write permissions on AWS: the `terraform-plan`
+# environment is bound to the read-only role.
+
+on:
+  schedule:
+    # 01:00 UTC = 10:00 JST, weekdays.
+    - cron: "0 1 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+concurrency:
+  group: terraform-drift
+  cancel-in-progress: false
+
+env:
+  TERRAFORM_VERSION: "1.13.5"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "0"
+
+jobs:
+  drift:
+    name: drift (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: terraform-plan
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(vars.TF_ENVIRONMENTS || '["dev"]') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Terraform init
+        uses: ./.github/actions/terraform-init
+        with:
+          environment: ${{ matrix.environment }}
+          role-arn: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          state-bucket: ${{ vars.TF_STATE_BUCKET }}
+          state-kms-key-arn: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+          terraform-version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Detect drift
+        id: detect
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          set -euo pipefail
+
+          report_dir="reports/${ENVIRONMENT}"
+          mkdir -p "${report_dir}"
+
+          set +e
+          terraform -chdir="environments/${ENVIRONMENT}" plan \
+            -var-file=env.tfvars \
+            -input=false \
+            -no-color \
+            -lock-timeout=5m \
+            -detailed-exitcode \
+            -out="${PWD}/${report_dir}/drift.tfplan" \
+            > "${report_dir}/drift.txt" 2>&1
+          plan_status=$?
+          set -e
+
+          case "${plan_status}" in
+            0)
+              echo "result=none" >> "${GITHUB_OUTPUT}"
+              echo "No drift in ${ENVIRONMENT}."
+              ;;
+            2)
+              echo "result=drift" >> "${GITHUB_OUTPUT}"
+              terraform -chdir="environments/${ENVIRONMENT}" show -no-color \
+                "${PWD}/${report_dir}/drift.tfplan" > "${report_dir}/drift-show.txt"
+              echo "::warning::Drift detected in ${ENVIRONMENT}"
+              ;;
+            *)
+              cat "${report_dir}/drift.txt"
+              echo "::error::drift plan failed for ${ENVIRONMENT} (exit ${plan_status})"
+              exit "${plan_status}"
+              ;;
+          esac
+
+      - name: Report drift as a GitHub issue
+        if: steps.detect.outputs.result == 'drift'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          set -euo pipefail
+
+          gh label create drift \
+            --color FBCA04 \
+            --description "Infrastructure differs from the Terraform configuration" \
+            --force >/dev/null 2>&1 || true
+
+          title="[drift] ${ENVIRONMENT}"
+          body_file="${RUNNER_TEMP}/drift-body.md"
+          {
+            echo "Terraform plan reports changes for \`${ENVIRONMENT}\` that were not applied through CI."
+            echo ""
+            echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Detected: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo ""
+            echo '```'
+            head -c 50000 "reports/${ENVIRONMENT}/drift-show.txt"
+            echo '```'
+          } > "${body_file}"
+
+          existing="$(gh issue list \
+            --state open \
+            --label drift \
+            --search "in:title \"${title}\"" \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body-file "${body_file}"
+            echo "Commented on existing issue #${existing}"
+          else
+            gh issue create --title "${title}" --label drift --body-file "${body_file}"
+          fi
+
+      - name: Upload drift report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-${{ matrix.environment }}-${{ github.run_id }}
+          path: reports/${{ matrix.environment }}/
+          retention-days: 14
+          if-no-files-found: ignore

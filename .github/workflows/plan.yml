@@ -1,0 +1,197 @@
+name: Terraform plan
+
+# Produces the plan artifact that a human reviews and that the apply workflow
+# applies verbatim. Runs on:
+#   * pull_request  -> plan posted as a sticky comment (review aid)
+#   * push to main  -> the canonical artifact an operator may apply
+#   * manual dispatch
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # GitHub OIDC -> AWS role
+  pull-requests: write # sticky plan comment
+
+concurrency:
+  group: terraform-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TERRAFORM_VERSION: "1.13.5"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "0"
+
+jobs:
+  plan:
+    name: plan (${{ matrix.environment }})
+    # Fork pull requests get no OIDC token and no secrets. They still receive the
+    # credential-free checks from pr-checks.yml; a credentialed plan would only
+    # fail, so skip it explicitly instead of failing the check.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: terraform-plan
+    strategy:
+      fail-fast: false
+      matrix:
+        # Scope is driven by the repo variable TF_ENVIRONMENTS (default ["dev"]),
+        # so environments that are not provisioned yet are not planned.
+        environment: ${{ fromJSON(vars.TF_ENVIRONMENTS || '["dev"]') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Terraform init
+        id: init
+        uses: ./.github/actions/terraform-init
+        with:
+          environment: ${{ matrix.environment }}
+          role-arn: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          state-bucket: ${{ vars.TF_STATE_BUCKET }}
+          state-kms-key-arn: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+          terraform-version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Verify aws_account_id matches the assumed role
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+          ACTUAL_ACCOUNT: ${{ steps.init.outputs.account-id }}
+        run: |
+          set -euo pipefail
+          expected="$(sed -nE \
+            's/^[[:space:]]*aws_account_id[[:space:]]*=[[:space:]]*"([0-9]{12})".*/\1/p' \
+            "environments/${ENVIRONMENT}/env.tfvars" | head -1)"
+
+          if [ -z "${expected}" ]; then
+            echo "::error file=environments/${ENVIRONMENT}/env.tfvars::aws_account_id not found"
+            exit 1
+          fi
+          if [ "${expected}" != "${ACTUAL_ACCOUNT}" ]; then
+            echo "::error file=environments/${ENVIRONMENT}/env.tfvars::aws_account_id is ${expected} but the assumed role belongs to account ${ACTUAL_ACCOUNT}. Replace the placeholder before planning."
+            exit 1
+          fi
+          echo "account ${ACTUAL_ACCOUNT} matches environments/${ENVIRONMENT}/env.tfvars"
+
+      - name: terraform plan
+        id: plan
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          set -euo pipefail
+
+          environment_dir="environments/${ENVIRONMENT}"
+          report_dir="reports/${ENVIRONMENT}"
+          plan_file="${PWD}/${report_dir}/tfplan"
+          mkdir -p "${report_dir}"
+
+          set +e
+          terraform -chdir="${environment_dir}" plan \
+            -var-file=env.tfvars \
+            -input=false \
+            -no-color \
+            -lock-timeout=5m \
+            -detailed-exitcode \
+            -out="${plan_file}" \
+            2>&1 | tee "${report_dir}/plan-output.txt"
+          plan_status=${PIPESTATUS[0]}
+          set -e
+
+          case "${plan_status}" in
+            0) echo "result=no-changes" >> "${GITHUB_OUTPUT}" ;;
+            2) echo "result=changes" >> "${GITHUB_OUTPUT}" ;;
+            *)
+              echo "::error::terraform plan failed for ${ENVIRONMENT} (exit ${plan_status})"
+              exit "${plan_status}"
+              ;;
+          esac
+
+          terraform -chdir="${environment_dir}" show -no-color "${plan_file}" \
+            > "${report_dir}/plan.txt"
+          terraform -chdir="${environment_dir}" show -json "${plan_file}" \
+            > "${report_dir}/plan.json"
+
+          {
+            echo "environment=${ENVIRONMENT}"
+            echo "commit_sha=${GITHUB_SHA}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "plan_sha256=$(sha256sum "${plan_file}" | awk '{print $1}')"
+          } > "${report_dir}/manifest.txt"
+
+      - name: Render summary
+        if: steps.plan.outcome == 'success'
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/render-plan-summary.py \
+            --plan-json "reports/${ENVIRONMENT}/plan.json" \
+            --environment "${ENVIRONMENT}" \
+            --commit "${GITHUB_SHA}" \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --artifact "terraform-plan-${ENVIRONMENT}" \
+            --output "reports/${ENVIRONMENT}/summary.md"
+
+          cat "reports/${ENVIRONMENT}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload plan artifact
+        # Uploaded even on failure so the plan output is inspectable, but only a
+        # run with conclusion=success may be used by the apply workflow.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ matrix.environment }}
+          path: reports/${{ matrix.environment }}/
+          retention-days: 5
+          if-no-files-found: ignore
+
+      - name: Comment plan on pull request
+        if: github.event_name == 'pull_request' && steps.plan.outcome == 'success'
+        uses: actions/github-script@v7
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = `<!-- terraform-plan:${process.env.ENVIRONMENT} -->`;
+            const summaryPath = `reports/${process.env.ENVIRONMENT}/summary.md`;
+            const body = fs.readFileSync(summaryPath, 'utf8').slice(0, 60000);
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            if (!issue_number) {
+              core.info('Not a pull request context; skipping comment.');
+              return;
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find(
+              (c) => typeof c.body === 'string' && c.body.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: existing.id, body,
+              });
+              core.info(`Updated comment ${existing.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
+              });
+              core.info('Created plan comment');
+            }

@@ -1,0 +1,38 @@
+# Local Terraform artifacts
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+*.tfplan
+*.tfplan.*
+plan.out
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Real backend configuration and secret variable files — never committed.
+**/backend.hcl
+!**/backend.hcl.example
+**/*.auto.tfvars
+**/secret.tfvars
+**/*.secret.tfvars
+
+# Scan and plan artifacts
+.checkov-cache/
+.tflint.d/
+reports/
+plans/
+
+# Bootstrap is account-specific; keep the example, ignore the real values.
+bootstrap/terraform.tfvars
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
