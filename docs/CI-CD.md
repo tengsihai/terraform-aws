@@ -1,6 +1,7 @@
 # CI/CD 配置说明
 
-本仓库的流水线把「校验」「计划」「执行」拆成三个独立阶段，执行阶段必须由人审批。
+本仓库的流水线把「校验」「计划」「执行」拆成三个独立阶段。**人工把关点是「合并 PR」**：
+合并 = 审批，合并后自动部署。
 
 ```
 PR 提交
@@ -11,14 +12,12 @@ PR 提交
   └─ plan.yml            只读角色 → terraform plan → 计划摘要粘到 PR
                          （fork PR 跳过，因为拿不到 OIDC token）
 
-合并到 main
+人工合并（这就是审批）
   │
-  └─ plan.yml            main 上的权威计划 → 上传 terraform-plan-<env> 工件
-                         （含 .tfplan / plan.txt / plan.json / manifest.txt）
-
-人工审批
+  ├─ plan.yml            main 上的权威计划 → 上传 terraform-plan-<env> 工件
+  │                      （含 .tfplan / plan.txt / plan.json / manifest.txt）
   │
-  └─ apply.yml           workflow_dispatch + GitHub Environment required reviewers
+  └─ apply.yml           由 plan 完成自动触发，仅接受 main 上 push 产生的 plan
                          → 校验工件 → 应用「那一份」plan 文件（不重新 plan）
 
 定时
@@ -31,7 +30,7 @@ PR 提交
 | --- | --- | --- | --- |
 | `pr-checks.yml` | `pull_request`、push main | `contents: read` | 无凭据的快速校验 |
 | `plan.yml` | `pull_request`、push main、手动 | `contents: read`、`id-token: write`、`pull-requests: write` | 生成可审批的 plan 工件 |
-| `apply.yml` | 仅手动 | `contents: read`、`id-token: write`、`actions: read` | 应用已审批的 plan |
+| `apply.yml` | plan 完成（自动） | `contents: read`、`id-token: write`、`actions: read` | 应用 main 上那份 plan |
 | `drift-detection.yml` | 工作日定时、手动 | `contents: read`、`id-token: write`、`issues: write` | 发现漂移并开 issue |
 
 共用组件：
@@ -72,15 +71,17 @@ apply_role_arns = {
 | 环境 | Required reviewers | Deployment branches | 用途 |
 | --- | --- | --- | --- |
 | `terraform-plan` | 无 | **不限**（PR 也要跑 plan） | plan 与 drift 使用的只读角色 |
-| `dev` | 可选 | `main` | dev apply |
-| `staging` | **必须** | `main` | staging apply |
-| `prod` | **必须**（≥2 人） | `main` | prod apply |
+| `dev` | **无**（合并即审批） | `main` | dev apply |
+| `staging` | **必须**（接入前先加回来） | `main` | staging apply |
+| `prod` | **必须**（≥2 人，接入前先加回来） | `main` | prod apply |
 
 > `terraform-plan` 不要限制部署分支。如果把它限制为 `main`，来自功能分支的 PR 就拿不到
 > 该环境的变量，`plan.yml` 会直接失败。
 
-`required reviewers` 就是「人工审批」本身：`apply.yml` 的 job 声明了 `environment: <env>`，
-在审批通过前不会执行任何步骤。**这一步无法用代码完成，必须在仓库设置里手工勾选。**
+**合并就是审批。** 自动部署路径上 `dev` 不设 required reviewers——把关发生在 PR 阶段：
+必须走 PR、必须过 4 项 required status checks、由人点合并。
+`staging` / `prod` 在接入 `TF_ENVIRONMENTS` 之前必须把 required reviewers 加回来，
+否则合并一次就把生产改了。
 
 ### 2.3 Variables
 
@@ -111,20 +112,20 @@ apply_role_arns = {
 
 **不需要任何长期 AWS 密钥。** 全链路使用 OIDC 短期凭证。
 
-### 2.4 分支保护
+### 2.4 分支保护（自动部署的安全前提）
 
-对 `main` 启用 required status checks（Settings → Branches）：
+`main` 上已创建 ruleset `protect-main`（enforcement: active）：
 
-- `fmt + validate`
-- `tflint`
-- `shellcheck + actionlint`
-- `checkov`
+| 规则 | 值 |
+| --- | --- |
+| Require a pull request before merging | 必须走 PR，**不允许直接 push** |
+| Required approvals | 0（单人仓库；有第二个人时建议提到 1） |
+| Require status checks | `fmt + validate`、`tflint`、`shellcheck + actionlint`、`checkov` |
+| Require branches to be up to date | 开 |
+| Block force pushes / deletion | 开 |
 
-同时建议：
-
-- Require pull request reviews（≥1）
-- Require branches to be up to date before merging
-- 禁止直接 push 到 `main`
+> 自动部署的安全性完全建立在这条 ruleset 上：绕过 PR 直接 push 就绕过了全部把关。
+> 单人仓库把 approvals 设为 0 是为了让自己的 PR 也能合；团队仓库务必改成 ≥1。
 
 ### 2.5 Actions 全局设置
 
@@ -145,35 +146,23 @@ git push origin feature/xxx
 `pr-checks.yml` 与 `plan.yml` 自动运行。plan 摘要以**粘性评论**形式出现在 PR 上，
 每个环境一条，重复推送会更新同一条评论而不是刷屏。
 
-### 合并后准备 apply
+### 合并 = 部署
+
+4 项检查全绿后，直接合并。合并后自动发生：
+
+1. `plan.yml` 在 main 上出权威 plan 并上传工件；
+2. `apply.yml` 由该 plan 完成自动触发，校验后 apply。
+
+**没有额外的审批点击。** 如果想在上生产前多一道人工确认，把 `prod` 环境的
+required reviewers 加回来即可——`apply.yml` 的 job 绑定了 `environment`，会自动等待审批。
+
+手动重放一条历史 plan（逃生通道）：
 
 ```bash
-# 找到当前 main 上成功的 plan run
-gh run list --workflow=plan.yml --branch=main --limit 10 \
-  --json databaseId,headSha,conclusion,createdAt
-
-# 确认它对应 main 的 HEAD
-git rev-parse origin/main
+gh run rerun <失败的 apply run id>     # 重跑同一条 apply，不重新 plan
 ```
 
-plan 摘要里的 commit 必须等于当前 `main` 的 HEAD。
-
-### 发起 apply
-
-```bash
-gh workflow run apply.yml \
-  -f environment=prod \
-  -f plan_run_id=<上面的 databaseId> \
-  -f confirmation=prod
-```
-
-随后：
-
-1. GitHub 会显示该 run **等待审批**（因为 `prod` 环境配置了 required reviewers）；
-2. 审批人打开 run，核对摘要里的 plan 内容与 `docs/PLAN-CHECKLIST.md`；
-3. 审批通过后，job 才会开始执行。
-
-`apply.yml` 在审批后会再做一遍机器校验（见下一节），任何一项不满足都会中止。
+`apply.yml` 在执行前会做一遍机器校验（见下一节），任何一项不满足都会中止。
 
 ## 4. apply 阶段的安全校验
 
@@ -181,14 +170,12 @@ gh workflow run apply.yml \
 
 | 校验 | 失败后果 |
 | --- | --- |
-| 触发分支必须是 `main` | 拒绝执行 |
-| `confirmation` 必须等于 `environment` | job 直接跳过 |
 | plan run 的 `conclusion` 必须是 `success` | 拒绝执行 |
-| plan run 的 `event` ∈ {push, workflow_dispatch} | 拒绝执行（PR 上的 plan 不能用来 apply） |
+| plan run 的 `event` 必须是 `push`（即一次合并） | 拒绝执行（PR/手动 plan 不能用来 apply） |
 | plan run 的 `head_branch` 必须是 `main` | 拒绝执行 |
 | plan run 必须由 `.github/workflows/plan.yml` 产生 | 拒绝执行 |
-| plan run 的 `head_sha` 必须等于当前 `main` HEAD | 拒绝执行，要求重新 plan |
-| 工件 `manifest.txt` 中的 `environment` 与输入一致 | 拒绝执行 |
+| plan run 的 `head_sha` 必须等于当前 `main` HEAD | 拒绝执行，新合并会由自己的 run 接管 |
+| 工件 `manifest.txt` 中的 `environment` 与目标一致 | 拒绝执行 |
 | 工件的 `commit_sha` 与 plan run 的 `head_sha` 一致 | 拒绝执行 |
 | plan 文件的 SHA-256 与 manifest 记录一致 | 拒绝执行（防篡改） |
 | plan 生成时间 ≤ `PLAN_MAX_AGE_HOURS`（默认 24h） | 拒绝执行 |
@@ -206,16 +193,19 @@ terraform apply "<下载的 tfplan>"
 此外，Terraform 自身还有一层保护：如果远端 state 在 plan 之后发生了变化，
 `terraform apply <saved-plan>` 会报 "Saved plan is stale" 并拒绝执行。
 
-## 5. 与「禁止自动 apply」的关系
+## 5. 人工把关在哪里
 
-仓库的本地脚本（`Makefile`、`scripts/*.sh`）仍然完全不提供 apply 入口。
-唯一的执行路径是 `apply.yml`，它满足：
+本地脚本（`Makefile`、`scripts/*.sh`）仍然完全不提供 apply 入口。
+唯一的执行路径是 `apply.yml`，它由「合并到 main」触发，把关点是：
 
-- 只能由人手动触发（`workflow_dispatch`）；
-- 必须经过 GitHub Environment 的 required reviewers 审批；
-- 执行对象是已评审的不可变 plan 工件，不是现场重新计算的计划。
+- **必须走 PR**：main 上的 ruleset 禁止直接 push；
+- **必须过 4 项 required status checks**：fmt/validate、tflint、shellcheck/actionlint、checkov；
+- **必须由人点合并**：合并这个动作就是审批；
+- 执行对象是该次合并产生的不可变 plan 工件，不是现场重新计算的计划；
+- `staging` / `prod` 接入时把 required reviewers 加回 `apply.yml` 绑定的 Environment，
+  即可在自动触发之上再加一道显式审批。
 
-也就是说：**自动化从不「决定」变更，只负责在人工批准后执行一个已经定稿的计划。**
+也就是说：**自动化从不「决定」变更，只负责在人工合并后执行那个已经定稿的计划。**
 
 ## 6. 各检查拦截什么
 
@@ -240,7 +230,7 @@ terraform apply "<下载的 tfplan>"
 | `not authorized to perform: s3:DeleteObject ... .tflock` | S3 原生锁（`use_lockfile`）释放失败，`state_access` 缺锁文件删除权限，或锁文件残留。手动删 `<key>.tflock` 等价于 `terraform force-unlock` |
 | plan 在 fork PR 上被跳过 | 预期行为：fork 拿不到 OIDC token。静态检查仍在 `pr-checks.yml` 中执行 |
 | `env.tfvars aws_account_id is ... but the assumed role belongs to ...` | 把 `environments/<env>/env.tfvars` 里的占位符 `123456789012` 换成真实账户 ID |
-| apply 报 `main moved since this plan was produced` | plan 之后有人合并了新提交。重新跑 `plan.yml`，用新的 run ID |
+| apply 报 `main moved since this plan was produced` | plan 之后有人合并了新提交。这是正常竞争：新合并会由它自己的 plan→apply 链路接管 |
 | apply 报 `plan is XXh old` | 超过 24 小时。重新 plan |
 | apply 报 `Saved plan is stale` | plan 之后 state 被改动过（例如有人手工 apply）。重新 plan |
 | drift issue 每天重复开 | 正常情况只会更新同一个 issue；标题为 `[drift] <env>` |

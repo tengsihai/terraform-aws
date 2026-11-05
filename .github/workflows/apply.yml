@@ -1,47 +1,26 @@
 name: Terraform apply
 
-# Human-approved apply of an already-reviewed plan.
+# Applies the plan artifact produced on main. The merge is the approval:
 #
-# Properties that make this safe:
-#   * dispatch only from main
-#   * the job targets a protected GitHub Environment (required reviewers), so it
-#     pauses until a human approves
-#   * the plan run must be a successful `plan.yml` run on main whose commit is
-#     still main's HEAD
-#   * the artifact checksum, environment and commit are re-verified before apply
-#   * the plan must be younger than PLAN_MAX_AGE_HOURS
-#   * Terraform applies the saved plan file; it never re-plans
+#   PR -> required status checks -> human merge -> plan on main -> apply
+#
+# The auto path has no separate approval step. Staging and production MUST
+# re-enable required reviewers on their GitHub Environment before they are
+# added to TF_ENVIRONMENTS.
+#
+# There is no workflow_dispatch here on purpose: to re-apply after a failure,
+# re-run the failed apply job (it applies the same saved plan, and Terraform's
+# staleness check rejects it if the state moved underneath it).
 
 on:
-  workflow_dispatch:
-    inputs:
-      environment:
-        description: Environment to apply.
-        type: choice
-        options:
-          - dev
-          - staging
-          - prod
-        required: true
-      plan_run_id:
-        description: Run ID of the successful "Terraform plan" run on main to apply.
-        type: string
-        required: true
-      confirmation:
-        description: Retype the environment name (dev/staging/prod) to confirm.
-        type: string
-        required: true
+  workflow_run:
+    workflows: [Terraform plan]
+    types: [completed]
 
 permissions:
   contents: read
   id-token: write # GitHub OIDC -> AWS role
-  actions: read # download the plan artifact from another run
-
-# Never cancel an apply halfway through: a partially applied plan is worse than
-# a queued one.
-concurrency:
-  group: terraform-apply-${{ inputs.environment }}
-  cancel-in-progress: false
+  actions: read # download the plan artifact from the plan run
 
 env:
   TERRAFORM_VERSION: "1.13.5"
@@ -51,48 +30,43 @@ env:
 
 jobs:
   apply:
-    name: apply (${{ inputs.environment }})
+    name: apply (${{ matrix.environment }})
+    # Only apply a plan that was produced on main by a push, i.e. a merge.
+    # Plan runs from pull requests (head_branch = feature branch) and manual
+    # plan dispatches are ignored here.
     if: >-
-      github.ref == 'refs/heads/main' &&
-      inputs.confirmation == inputs.environment &&
-      contains(fromJSON(vars.TF_ENVIRONMENTS || '["dev"]'), inputs.environment)
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # Required reviewers on dev/staging/prod turn this into a human approval gate.
-    environment: ${{ inputs.environment }}
+    # Supplies the per-environment apply role ARN; add required reviewers here
+    # when an environment must be gated separately from the merge.
+    environment: ${{ matrix.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(vars.TF_ENVIRONMENTS || '["dev"]') }}
+
+    # Never cancel an apply halfway through: a partially applied plan is worse
+    # than a queued one.
+    concurrency:
+      group: terraform-apply-${{ matrix.environment }}
+      cancel-in-progress: false
 
     steps:
-      - name: Validate input
-        shell: bash
-        env:
-          ENVIRONMENT: ${{ inputs.environment }}
-        run: |
-          set -euo pipefail
-          case "${ENVIRONMENT}" in
-            dev | staging | prod) ;;
-            *)
-              echo "::error::unsupported environment '${ENVIRONMENT}'"
-              exit 1
-              ;;
-          esac
-
       - name: Resolve and verify the plan run
         id: plan_run
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+          PLAN_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
 
-          if ! [[ "${PLAN_RUN_ID}" =~ ^[0-9]+$ ]]; then
-            echo "::error::plan_run_id must be numeric"
-            exit 1
-          fi
-
           api="repos/${GITHUB_REPOSITORY}/actions/runs/${PLAN_RUN_ID}"
           if ! run_json="$(gh api "${api}" 2>/dev/null)"; then
-            echo "::error::run ${PLAN_RUN_ID} not found in ${GITHUB_REPOSITORY}"
+            echo "::error::plan run ${PLAN_RUN_ID} not found in ${GITHUB_REPOSITORY}"
             exit 1
           fi
 
@@ -128,7 +102,7 @@ jobs:
 
           main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
           if [ "${sha}" != "${main_sha}" ]; then
-            echo "::error::main moved since this plan was produced (plan ${sha:0:12}, main ${main_sha:0:12}). Re-run the plan workflow on the current main."
+            echo "::error::main moved since this plan was produced (plan ${sha:0:12}, main ${main_sha:0:12}); a newer plan will be applied by its own run"
             exit 1
           fi
 
@@ -146,15 +120,15 @@ jobs:
       - name: Download the plan artifact
         uses: actions/download-artifact@v4
         with:
-          name: terraform-plan-${{ inputs.environment }}
-          run-id: ${{ inputs.plan_run_id }}
+          name: terraform-plan-${{ matrix.environment }}
+          run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ${{ runner.temp }}/plan
 
       - name: Verify the plan artifact
         shell: bash
         env:
-          ENVIRONMENT: ${{ inputs.environment }}
+          ENVIRONMENT: ${{ matrix.environment }}
           PLAN_DIR: ${{ runner.temp }}/plan
           EXPECTED_SHA: ${{ steps.plan_run.outputs.head_sha }}
         run: |
@@ -203,7 +177,7 @@ jobs:
         id: init
         uses: ./.github/actions/terraform-init
         with:
-          environment: ${{ inputs.environment }}
+          environment: ${{ matrix.environment }}
           role-arn: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           state-bucket: ${{ vars.TF_STATE_BUCKET }}
@@ -213,7 +187,7 @@ jobs:
       - name: Confirm account matches env.tfvars
         shell: bash
         env:
-          ENVIRONMENT: ${{ inputs.environment }}
+          ENVIRONMENT: ${{ matrix.environment }}
           ACTUAL_ACCOUNT: ${{ steps.init.outputs.account-id }}
         run: |
           set -euo pipefail
@@ -228,12 +202,12 @@ jobs:
       - name: terraform apply (saved plan only)
         shell: bash
         env:
-          ENVIRONMENT: ${{ inputs.environment }}
+          ENVIRONMENT: ${{ matrix.environment }}
           PLAN_FILE: ${{ runner.temp }}/plan/tfplan
         run: |
           set -euo pipefail
-          # This applies the reviewed plan artifact. It does not re-plan, so what
-          # the reviewer approved is exactly what runs.
+          # Applies the reviewed plan artifact. It does not re-plan, so what the
+          # merge approved is exactly what runs.
           terraform -chdir="environments/${ENVIRONMENT}" apply \
             -input=false \
             -no-color \
@@ -245,7 +219,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          ENVIRONMENT: ${{ inputs.environment }}
+          ENVIRONMENT: ${{ matrix.environment }}
           PLAN_URL: ${{ steps.plan_run.outputs.plan_url }}
           PLAN_DIR: ${{ runner.temp }}/plan
         run: |
@@ -269,7 +243,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: apply-${{ inputs.environment }}-${{ github.run_id }}
+          name: apply-${{ matrix.environment }}-${{ github.run_id }}
           path: ${{ runner.temp }}/plan/
           retention-days: 30
           if-no-files-found: ignore
