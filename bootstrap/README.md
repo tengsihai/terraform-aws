@@ -18,10 +18,25 @@ fork 出来的 PR 拿不到 OIDC token，所以外部贡献者无法借此访问
 | 资源 | 信任条件 | 权限 |
 | --- | --- | --- |
 | `aws_iam_openid_connect_provider.github` | — | 仅作为信任锚点 |
-| `aws_iam_role.plan` | `repo:<owner>/<repo>:environment:terraform-plan` | 只读 + state 读写 |
+| `aws_iam_role.plan` | `repo:<owner>/<repo>:environment:terraform-plan`（见下方 sub 格式说明） | 只读 + state 读写 |
 | `aws_iam_role.apply["dev"]` | `repo:<owner>/<repo>:environment:dev` | 网络/存储/KMS/日志/IAM 变更 |
 | `aws_iam_role.apply["staging"]` | `repo:<owner>/<repo>:environment:staging` | 同上（`environments` 含 staging 时才创建） |
 | `aws_iam_role.apply["prod"]` | `repo:<owner>/<repo>:environment:prod` | 同上（`environments` 含 prod 时才创建） |
+
+### sub claim 有两种格式
+
+GitHub 把 OIDC 的 `sub` 改成了带数字 ID 的格式。同一个 workflow 现在可能发出：
+
+```
+repo:tengsihai/terraform-aws:environment:dev                     # 旧格式
+repo:tengsihai@40748495/terraform-aws@1445773765:environment:dev # 新格式（带 owner/repo ID）
+```
+
+所以信任策略对两种都放行：login 和仓库名是精确匹配，数字 ID 用 `*`。login 不能包含
+`@`，所以这个通配符不会放宽信任范围——攻击者无法注册一个 login 使 pattern 变宽。
+
+排查方法：加一个临时 workflow，`permissions: id-token: write` 后解码
+`ACTIONS_ID_TOKEN_REQUEST_URL` 返回的 JWT，看 `sub` 字段的实际值。
 
 `environments` 默认是 `["dev"]`：只创建 dev 的 apply 角色。每个 apply 角色只对自己环境的
 GitHub Environment 生效，即使有人拿到了 staging 的审批，也换不到 prod 的角色。

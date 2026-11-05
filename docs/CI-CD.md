@@ -236,7 +236,8 @@ terraform apply "<下载的 tfplan>"
 | --- | --- |
 | `No valid credential sources found` | 本地用的是 AWS CLI 的 `login` 登录（`aws configure list` 里 credential type 显示为 `login`），Terraform 的 SDK 读不到。`plan.sh` 会自动导出会话凭证；手工执行时先跑 `eval "$(aws configure export-credentials --format env)"` |
 | `Backend configuration changed` | 本地目录此前初始化成了别的后端。加 `-reconfigure` 重跑 `terraform init`（`plan.sh` 已自动处理） |
-| `Not authorized to perform sts:AssumeRoleWithWebIdentity` | 信任策略的 `sub` 与运行时环境名不匹配。检查 job 的 `environment:` 是否与 `bootstrap` 中的 `variables.environments` / `plan_environment_name` 一致 |
+| `Not authorized to perform sts:AssumeRoleWithWebIdentity` | 信任策略的 `sub` 与 GitHub 实际发出的不一致。**GitHub 已把 sub 改成带数字 ID 的格式**：`repo:<owner>@<owner_id>/<repo>@<repo_id>:environment:<name>`，旧格式 `repo:<owner>/<repo>:environment:<name>` 也可能仍出现。`bootstrap` 两种都收（login 与仓库名钉死、数字 ID 用通配符，不会放宽信任范围）。排查时直接解码 workflow 拿到的 OIDC token 看 `sub` 字段 |
+| `not authorized to perform: s3:DeleteObject ... .tflock` | S3 原生锁（`use_lockfile`）释放失败，`state_access` 缺锁文件删除权限，或锁文件残留。手动删 `<key>.tflock` 等价于 `terraform force-unlock` |
 | plan 在 fork PR 上被跳过 | 预期行为：fork 拿不到 OIDC token。静态检查仍在 `pr-checks.yml` 中执行 |
 | `env.tfvars aws_account_id is ... but the assumed role belongs to ...` | 把 `environments/<env>/env.tfvars` 里的占位符 `123456789012` 换成真实账户 ID |
 | apply 报 `main moved since this plan was produced` | plan 之后有人合并了新提交。重新跑 `plan.yml`，用新的 run ID |

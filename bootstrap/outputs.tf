@@ -18,12 +18,16 @@ output "apply_role_arns" {
   value       = { for env, role in aws_iam_role.apply : env => role.arn }
 }
 
-output "plan_subject_claim" {
-  description = "Subject claim the plan role trusts."
-  value       = "${local.repo_subject}:environment:${var.plan_environment_name}"
+output "plan_subject_claims" {
+  description = "Subject claims the plan role trusts, in both the legacy and the ID-carrying GitHub format."
+  value       = [for prefix in local.repo_subject_prefixes : "${prefix}${var.plan_environment_name}"]
 }
 
 output "apply_subject_claims" {
-  description = "Subject claims the apply roles trust."
-  value       = { for env in var.environments : env => "${local.repo_subject}:environment:${env}" }
+  description = "Subject claims each apply role trusts, in both GitHub subject formats."
+  value = {
+    for env in var.environments : env => [
+      for prefix in local.repo_subject_prefixes : "${prefix}${env}"
+    ]
+  }
 }

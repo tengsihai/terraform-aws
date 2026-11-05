@@ -24,6 +24,19 @@ locals {
 
   repo_subject = "repo:${var.github_owner}/${var.github_repo}"
 
+  # GitHub changed the OIDC subject claim to carry the owner and repository
+  # numeric IDs, so the same workflow now produces BOTH of these:
+  #
+  #   repo:tengsihai/terraform-aws:environment:dev                       (legacy)
+  #   repo:tengsihai@40748495/terraform-aws@1445773765:environment:dev   (current)
+  #
+  # Trust both. The login and the repository name are pinned, and logins cannot
+  # contain '@', so the wildcarded numeric IDs do not widen the trust.
+  repo_subject_prefixes = [
+    "${local.repo_subject}:environment:",
+    "repo:${var.github_owner}@*/${var.github_repo}@*:environment:",
+  ]
+
   tags = merge(var.tags, {
     "managed-by" = "terraform"
     "component"  = "ci-cd-oidc"
@@ -61,6 +74,16 @@ data "aws_iam_policy_document" "state_access" {
     effect    = "Allow"
     actions   = ["s3:GetObject", "s3:PutObject"]
     resources = ["${local.state_bucket_arn}/${var.state_key_prefix}/*"]
+  }
+
+  # S3-native locking (use_lockfile = true) writes <key>.tflock and must be able
+  # to delete it again. Scoped to lock files only: the pattern cannot match the
+  # state object itself.
+  statement {
+    sid       = "ManageStateLockFiles"
+    effect    = "Allow"
+    actions   = ["s3:DeleteObject"]
+    resources = ["${local.state_bucket_arn}/${var.state_key_prefix}/*.tflock*"]
   }
 
   dynamic "statement" {
@@ -331,7 +354,7 @@ data "aws_iam_policy_document" "plan_trust" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["${local.repo_subject}:environment:${var.plan_environment_name}"]
+      values   = [for prefix in local.repo_subject_prefixes : "${prefix}${var.plan_environment_name}"]
     }
   }
 }
@@ -358,7 +381,7 @@ data "aws_iam_policy_document" "apply_trust" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["${local.repo_subject}:environment:${each.value}"]
+      values   = [for prefix in local.repo_subject_prefixes : "${prefix}${each.value}"]
     }
   }
 }
