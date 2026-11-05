@@ -1,0 +1,54 @@
+name: OIDC debug
+
+# TEMPORARY diagnostic. Prints the claims of the OIDC token GitHub issues for
+# this exact job context (same environment as plan.yml). Delete once the
+# trust policy has been confirmed.
+#
+# Does not call AWS: it only reads the token from the Actions runtime.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  debug:
+    name: decode token (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    environment: terraform-plan
+    strategy:
+      matrix:
+        environment: ${{ fromJSON(vars.TF_ENVIRONMENTS || '["dev"]') }}
+    steps:
+      - name: Decode OIDC token claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, json, os, urllib.request
+
+          url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + "&audience=sts.amazonaws.com"
+          req = urllib.request.Request(
+              url,
+              headers={
+                  "Authorization": "Bearer "
+                  + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+              },
+          )
+          token = json.load(urllib.request.urlopen(req))["value"]
+
+          payload = token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+
+          keep = [
+              "iss", "aud", "sub", "repository", "repository_owner",
+              "ref", "ref_type", "job_workflow_ref", "environment",
+              "actor", "workflow", "event_name",
+          ]
+          print(json.dumps({k: claims[k] for k in keep if k in claims}, indent=2))
+          PY
