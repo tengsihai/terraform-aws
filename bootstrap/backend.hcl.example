@@ -1,0 +1,9 @@
+# Copy to backend.hcl (git-ignored) and fill in real values, then:
+#
+#   terraform init -reconfigure -backend-config=backend.hcl
+
+bucket       = "platform-terraform-state-790354569983-ap-northeast-1"
+key          = "bootstrap/terraform.tfstate"
+region       = "ap-northeast-1"
+encrypt      = true
+use_lockfile = true

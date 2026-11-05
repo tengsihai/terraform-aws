@@ -1,0 +1,16 @@
+# Copy this file to backend.hcl (git-ignored) and fill in real values, then:
+#
+#   terraform init -backend-config=backend.hcl
+#
+# The bucket must already exist, have versioning enabled, default encryption
+# with a KMS key, and Block Public Access turned on.
+
+bucket       = "platform-terraform-state-123456789012-ap-northeast-1"
+key          = "network/prod/terraform.tfstate"
+region       = "ap-northeast-1"
+encrypt      = true
+kms_key_id   = "arn:aws:kms:ap-northeast-1:123456789012:key/REPLACE-ME"
+
+# S3-native state locking (Terraform >= 1.10). Drop this and set
+# `dynamodb_table` instead if your organisation still pins older versions.
+use_lockfile = true
