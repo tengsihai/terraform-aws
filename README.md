@@ -26,7 +26,7 @@
 │   ├── workflows/
 │   │   ├── pr-checks.yml          # fmt · validate · tflint · shellcheck/actionlint · checkov
 │   │   ├── plan.yml               # 只读 plan → 工件 + PR 粘性评论
-│   │   ├── apply.yml              # 人工审批后应用已评审的 plan（不重新 plan）
+│   │   ├── apply.yml              # 合并即部署：应用 main 上已评审的 plan（不重新 plan）
 │   │   └── drift-detection.yml    # 定时只读 plan，发现漂移开 issue
 │   ├── actions/terraform-init/    # OIDC 换角色 + S3 backend init
 │   ├── scripts/render-plan-summary.py
@@ -103,23 +103,20 @@ make apply           # 故意报错退出，见下方审批流程
 
 ## 审批与执行（apply）
 
-执行只有一条路径，且必须有人的批准：
+**合并 PR 就是审批。** 变更只有一条路径：
 
-1. 合并到 `main` 后，`plan.yml` 生成权威 plan 工件（`.tfplan` + 摘要 + 校验清单）。
-2. 审批人从仓库设置里配置的 GitHub Environment（`prod` 要求 ≥2 名 reviewer）批准。
-3. 触发方式：
-
-   ```bash
-   gh workflow run apply.yml \
-     -f environment=prod \
-     -f plan_run_id=<plan run 的 databaseId> \
-     -f confirmation=prod
-   ```
-
-4. 审批通过后，CI 会重新校验：plan run 必须成功、来自 `plan.yml`、跑在 `main` 上、
-   提交必须仍是 `main` 的 HEAD、工件 SHA-256 一致、plan 未超过 24 小时、`applyable=true`、
+1. 提交 PR → 4 项检查必须全绿（`main` 有 ruleset，不允许直接 push）。
+2. 由人合并。
+3. 合并后自动：`plan.yml` 在 main 上出权威 plan 工件 → `apply.yml` 被该 plan 完成自动触发。
+4. apply 前机器校验：plan run 必须成功、必须是 main 上 push 产生的、来自 `plan.yml`、
+   提交仍是 `main` 的 HEAD、工件 SHA-256 一致、plan 未超过 24 小时、`applyable=true`、
    账户 ID 与 `env.tfvars` 一致。
-5. 最后执行 `terraform apply <已评审的 tfplan>` —— **不重新 plan**。
+5. 执行 `terraform apply <合并时评审的 tfplan>` —— **不重新 plan**。
+
+`dev` 环境没有额外的审批点击。`staging` / `prod` 接入前必须把 required reviewers
+加回各自的 GitHub Environment——`apply.yml` 的 job 绑定了 `environment`，会自动等待审批。
+
+失败重放：`gh run rerun <apply run id>`（应用同一份 plan，不重新 plan）。
 
 完整的门禁清单、OIDC 配置和排障见 [docs/CI-CD.md](docs/CI-CD.md)。
 

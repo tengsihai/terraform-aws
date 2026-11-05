@@ -32,6 +32,7 @@
 | R-23 | 第三方 Action 供应链风险 | 中 | 已缓解 |
 | R-24 | fork PR 无 plan 覆盖 | 低 | 已接受 |
 | R-25 | drift 检测只覆盖 Terraform 管理的资源 | 低 | 已接受 |
+| R-26 | 合并即部署，缺少独立审批 | 中 | 已接受 |
 
 ---
 
@@ -39,18 +40,34 @@
 
 ### R-01 非受控地执行 `apply` / `destroy`
 
-- **场景**：变更绕过审批直接落到真实账户。
+- **场景**：变更绕过人工把关直接落到真实账户。
 - **影响**：生产网络被创建/修改/删除。VPC 删除会连带删除其下所有资源。
+- **人工把关点**：**合并 PR**。main 上的 ruleset `protect-main` 禁止直接 push，
+  要求 4 项 status checks 全绿；合并这个动作就是审批。
 - **缓解**：
   - 本地：`scripts/lib.sh` 的 `refuse_mutation()` 硬拒绝，`Makefile` 的 `apply`/`destroy`
     目标只打印说明并 `exit 1`；
-  - CI：唯一的执行入口 `apply.yml` 只能手动触发，且 job 绑定 GitHub Environment，
-    必须由配置的 reviewer 批准；执行对象是已评审的不可变 plan 工件，不重新 plan；
+  - CI：唯一的执行入口 `apply.yml` 由「main 上的 plan 完成」自动触发，且只接受
+    `push` 事件（一次合并）产生的 plan；执行对象是不可变的 plan 工件，不重新 plan；
   - `apply.yml` 在 apply 前校验 plan run 来源、分支、提交、SHA-256、时效与账户 ID；
-  - 并发组 `cancel-in-progress: false`，不会把执行中的 apply 取消掉。
-- **剩余风险**：拥有 GitHub Environment 审批权的人可以直接批准恶意 plan。
-  技术层面无法消除，需要双人审批 + 审计。
-- **状态**：已缓解（技术层 + 审批层），流程层需配合双人审批。
+  - 并发组 `cancel-in-progress: false`，不会把执行中的 apply 取消掉；
+  - `staging` / `prod` 接入前必须把 required reviewers 加回 Environment，
+    在合并之上再加一道显式审批。
+- **剩余风险**：拥有写权限的人仍能合并一个含恶意变更的 PR。
+  合并是唯一把关点，团队仓库务必把 required approvals 提到 ≥1。
+- **状态**：已缓解（单人仓库）；团队场景需双人评审。
+
+### R-26 合并即部署，缺少独立审批
+
+- **场景**：`apply.yml` 由合并自动触发，`dev` 环境不再有 required reviewers。
+- **影响**：一次合并立即改变真实基础设施；plan 与 apply 之间没有人再看过一眼。
+- **缓解**：
+  - PR 上有 plan 摘要粘性评论，评审时能看到「会创建/修改/删除什么」；
+  - PR 必须过 4 项检查才允许合并；
+  - destructive 变更在摘要里有醒目告警（`> [!WARNING]`）；
+  - `TF_ENVIRONMENTS` 只列已确认要自动部署的环境。
+- **决策**：单人仓库接受；接入 staging/prod 时必须恢复 required reviewers（R-01）。
+- **状态**：已接受。
 
 ### R-02 离线 plan 被误当作已校验计划
 
