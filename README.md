@@ -20,6 +20,25 @@
 
 ---
 
+## 分支模型
+
+**分支即环境**，合并到哪个分支就部署哪个环境：
+
+| 分支 | 作用 |
+| --- | --- |
+| 功能分支（`feat/*`、`fix/*`…） | 开发用，PR 的目标是环境分支 |
+| `dev` / `staging` / `prod` | 环境分支，**合并进去就触发该环境的 plan → apply** |
+| `main` | 发布后归档，不参与部署（只在发布时接收 `prod` 的合并） |
+
+```
+feat/xxx ──PR──► dev ──PR──► staging ──PR──► prod ──PR──► main（归档）
+                 │           │              │
+                 └ 部署 dev   └ 部署 staging  └ 部署 prod
+```
+
+每个环境分支都受 ruleset 保护：必须走 PR、必须过全部 required status checks、
+不允许直接 push。仓库变量 `TF_ENVIRONMENTS` 决定哪些环境允许自动部署（默认 `["dev"]`）。
+
 ## 目录结构
 
 ```
@@ -30,7 +49,7 @@
 │   ├── workflows/
 │   │   ├── pr-checks.yml          # fmt · validate · tflint · shellcheck/actionlint · checkov
 │   │   ├── plan.yml               # 只读 plan → 工件 + PR 粘性评论
-│   │   ├── apply.yml              # 合并即部署：应用 main 上已评审的 plan（不重新 plan）
+│   │   ├── apply.yml              # 合并到环境分支即部署：应用该分支上已评审的 plan
 │   │   └── drift-detection.yml    # 定时只读 plan，发现漂移开 issue
 │   ├── actions/terraform-init/    # OIDC 换角色 + S3 backend init
 │   ├── scripts/render-plan-summary.py
@@ -198,16 +217,19 @@ make apply           # 故意报错退出，见下方审批流程
 
 **合并 PR 就是审批。** 变更只有一条路径：
 
-1. 提交 PR → 全部 required status checks 必须全绿（`main` 有 ruleset，不允许直接 push）。
+1. 提交 PR 到目标环境分支 → 全部 required status checks 必须全绿（环境分支有 ruleset，
+   不允许直接 push）。
 2. 由人合并。
-3. 合并后自动：`plan.yml` 在 main 上出权威 plan 工件 → `apply.yml` 被该 plan 完成自动触发。
-4. apply 前机器校验：plan run 必须成功、必须是 main 上 push 产生的、来自 `plan.yml`、
-   提交仍是 `main` 的 HEAD、工件 SHA-256 一致、plan 未超过 24 小时、`applyable=true`、
+3. 合并后自动：`plan.yml` 在该环境分支上出权威 plan 工件 → `apply.yml` 被该 plan
+   完成自动触发（`head_branch` 必须是 `dev`/`staging`/`prod`，且在 `TF_ENVIRONMENTS` 内）。
+4. apply 前机器校验：plan run 必须成功、必须是该环境分支上 push 产生的、来自 `plan.yml`、
+   提交仍是该分支的 HEAD、工件 SHA-256 一致、plan 未超过 24 小时、`applyable=true`、
    账户 ID 与 `env.tfvars` 一致。
 5. 执行 `terraform apply <合并时评审的 tfplan>` —— **不重新 plan**。
 
 `dev` 环境没有额外的审批点击。`staging` / `prod` 接入前必须把 required reviewers
-加回各自的 GitHub Environment——`apply.yml` 的 job 绑定了 `environment`，会自动等待审批。
+加回各自的 GitHub Environment——`apply.yml` 的 job 绑定了 `environment`，会自动等待审批；
+同时把该环境名加进仓库变量 `TF_ENVIRONMENTS`，否则合并不会触发部署。
 
 失败重放：`gh run rerun <apply run id>`（应用同一份 plan，不重新 plan）。
 

@@ -35,9 +35,11 @@ jobs:
         environment: ${{ fromJSON(vars.TF_ENVIRONMENTS || '["dev"]') }}
 
     steps:
-      - name: Checkout
+      - name: Checkout the environment branch
+        # 分支即环境：漂移要对着该环境自己的分支比，而不是默认分支。
         uses: actions/checkout@v7
         with:
+          ref: ${{ matrix.environment }}
           persist-credentials: false
 
       - name: Terraform init

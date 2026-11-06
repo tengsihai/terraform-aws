@@ -1,14 +1,17 @@
 name: Terraform plan
 
-# 生成 plan 工件：人工评审它，apply 工作流原样执行它。触发场景：
-#   * pull_request  -> plan 以粘性评论的形式贴到 PR（评审辅助）
-#   * push to main  -> 产出操作员可以真正应用的权威工件
-#   * 手动触发
+# 生成 plan 工件：人工评审它，apply 工作流原样执行它。
+#
+# 分支即环境：dev / staging / prod 各对应一个环境，合并到哪个分支就部署哪个环境。
+#   * pull_request（目标为环境分支）-> plan 以粘性评论的形式贴到 PR（评审辅助）
+#   * push 到环境分支               -> 产出该环境可应用的权威工件
+#   * 手动触发（在环境分支上）
 
 on:
   pull_request:
+    branches: [dev, staging, prod]
   push:
-    branches: [main]
+    branches: [dev, staging, prod]
   workflow_dispatch:
 
 permissions:
@@ -27,7 +30,8 @@ env:
 
 jobs:
   plan:
-    name: plan (${{ matrix.environment }})
+    # 分支即环境：PR 取目标分支（base_ref），push/手动触发取当前分支。
+    name: plan (${{ github.event_name == 'pull_request' && github.base_ref || github.ref_name }})
     # fork 出来的 PR 拿不到 OIDC token，也拿不到任何 secret。它们仍然会跑
     # pr-checks.yml 里那些无需凭据的检查；而需要凭据的 plan 对它们只会失败，
     # 所以这里显式跳过，而不是让检查报错。
@@ -37,12 +41,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: terraform-plan
-    strategy:
-      fail-fast: false
-      matrix:
-        # 范围由仓库变量 TF_ENVIRONMENTS 决定（默认 ["dev"]），
-        # 尚未接入的环境因此不会被 plan。
-        environment: ${{ fromJSON(vars.TF_ENVIRONMENTS || '["dev"]') }}
+
+    env:
+      ENVIRONMENT: ${{ github.event_name == 'pull_request' && github.base_ref || github.ref_name }}
 
     steps:
       - name: Checkout
@@ -54,7 +55,7 @@ jobs:
         id: init
         uses: ./.github/actions/terraform-init
         with:
-          environment: ${{ matrix.environment }}
+          environment: ${{ env.ENVIRONMENT }}
           role-arn: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           state-bucket: ${{ vars.TF_STATE_BUCKET }}
@@ -64,7 +65,7 @@ jobs:
       - name: Verify aws_account_id matches the assumed role
         shell: bash
         env:
-          ENVIRONMENT: ${{ matrix.environment }}
+          ENVIRONMENT: ${{ env.ENVIRONMENT }}
           ACTUAL_ACCOUNT: ${{ steps.init.outputs.account-id }}
         run: |
           set -euo pipefail
@@ -85,8 +86,6 @@ jobs:
       - name: terraform plan
         id: plan
         shell: bash
-        env:
-          ENVIRONMENT: ${{ matrix.environment }}
         run: |
           set -euo pipefail
 
@@ -132,8 +131,6 @@ jobs:
       - name: Render summary
         if: steps.plan.outcome == 'success'
         shell: bash
-        env:
-          ENVIRONMENT: ${{ matrix.environment }}
         run: |
           set -euo pipefail
           python3 .github/scripts/render-plan-summary.py \
@@ -152,8 +149,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: terraform-plan-${{ matrix.environment }}
-          path: reports/${{ matrix.environment }}/
+          name: terraform-plan-${{ env.ENVIRONMENT }}
+          path: reports/${{ env.ENVIRONMENT }}/
           retention-days: 5
           if-no-files-found: ignore
 
@@ -161,7 +158,7 @@ jobs:
         if: github.event_name == 'pull_request' && steps.plan.outcome == 'success'
         uses: actions/github-script@v9
         env:
-          ENVIRONMENT: ${{ matrix.environment }}
+          ENVIRONMENT: ${{ env.ENVIRONMENT }}
         with:
           script: |
             const fs = require('fs');
