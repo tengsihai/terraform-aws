@@ -28,7 +28,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -36,14 +36,14 @@ jobs:
         run: mkdir -p "${TF_PLUGIN_CACHE_DIR}"
 
       - name: Cache providers
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.TF_PLUGIN_CACHE_DIR }}
           key: terraform-plugins-${{ runner.os }}-${{ hashFiles('**/.terraform.lock.hcl') }}
           restore-keys: terraform-plugins-${{ runner.os }}-
 
       - name: Install Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
@@ -60,12 +60,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install tflint
-        uses: terraform-linters/setup-tflint@v4
+        uses: terraform-linters/setup-tflint@v6
         with:
           tflint_version: latest
           cache: true
@@ -86,7 +86,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -94,7 +94,7 @@ jobs:
         run: shellcheck --version && shellcheck --external-sources scripts/*.sh
 
       - name: Install Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           # actionlint v1.7.12 requires Go >= 1.25. setup-go pins
           # GOTOOLCHAIN=local, so the toolchain cannot upgrade itself.
@@ -115,12 +115,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -132,7 +132,7 @@ jobs:
 
       - name: Upload reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: checkov-reports
           path: reports/

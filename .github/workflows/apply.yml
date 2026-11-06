@@ -112,13 +112,13 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Checkout the exact commit that produced the plan
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.plan_run.outputs.head_sha }}
           persist-credentials: false
 
       - name: Download the plan artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: terraform-plan-${{ matrix.environment }}
           run-id: ${{ github.event.workflow_run.id }}
@@ -260,7 +260,7 @@ jobs:
 
       - name: Upload apply log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: apply-${{ matrix.environment }}-${{ github.run_id }}
           path: ${{ runner.temp }}/plan/
