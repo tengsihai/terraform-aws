@@ -229,6 +229,32 @@ data "aws_iam_policy_document" "plan_read" {
     actions   = ["autoscaling:Describe*"]
     resources = ["*"]
   }
+
+  # CloudFront 是全局服务，资源 ARN 不带区域。plan 需要读回分发、
+  # OAC、缓存/请求/响应头策略才能生成准确的 diff。
+  statement {
+    sid    = "ReadCloudFront"
+    effect = "Allow"
+    actions = [
+      "cloudfront:GetCachePolicy",
+      "cloudfront:GetCachePolicyConfig",
+      "cloudfront:GetDistribution",
+      "cloudfront:GetDistributionConfig",
+      "cloudfront:GetOriginAccessControl",
+      "cloudfront:GetOriginAccessControlConfig",
+      "cloudfront:GetOriginRequestPolicy",
+      "cloudfront:GetOriginRequestPolicyConfig",
+      "cloudfront:GetResponseHeadersPolicy",
+      "cloudfront:GetResponseHeadersPolicyConfig",
+      "cloudfront:ListCachePolicies",
+      "cloudfront:ListDistributions",
+      "cloudfront:ListOriginAccessControls",
+      "cloudfront:ListOriginRequestPolicies",
+      "cloudfront:ListResponseHeadersPolicies",
+      "cloudfront:ListTagsForResource",
+    ]
+    resources = ["*"]
+  }
 }
 
 ###############################################################################
@@ -271,6 +297,7 @@ data "aws_iam_policy_document" "apply_mutations" {
       "ec2:DeleteVpcEndpoints",
       "ec2:DetachInternetGateway",
       "ec2:DisassociateRouteTable",
+      "ec2:ModifySecurityGroupRules",
       "ec2:ModifySubnetAttribute",
       "ec2:ModifyVpcAttribute",
       "ec2:ModifyVpcEndpoint",
@@ -409,6 +436,44 @@ data "aws_iam_policy_document" "apply_mutations" {
     resources = ["*"]
   }
 
+  # 静态站点分发（modules/cloudfront-s3）。CloudFront 的资源 ARN 是全局的
+  # （arn:aws:cloudfront::<account>:*），所以 action 作用在 * 上，由边界兜底。
+  statement {
+    sid    = "ManageCloudFront"
+    effect = "Allow"
+    actions = [
+      "cloudfront:CreateCachePolicy",
+      "cloudfront:CreateDistribution",
+      "cloudfront:CreateInvalidation",
+      "cloudfront:CreateOriginAccessControl",
+      "cloudfront:CreateOriginRequestPolicy",
+      "cloudfront:CreateResponseHeadersPolicy",
+      "cloudfront:DeleteCachePolicy",
+      "cloudfront:DeleteDistribution",
+      "cloudfront:DeleteOriginAccessControl",
+      "cloudfront:DeleteOriginRequestPolicy",
+      "cloudfront:DeleteResponseHeadersPolicy",
+      "cloudfront:GetInvalidation",
+      "cloudfront:ListInvalidations",
+      "cloudfront:TagResource",
+      "cloudfront:UntagResource",
+      "cloudfront:UpdateCachePolicy",
+      "cloudfront:UpdateDistribution",
+      "cloudfront:UpdateOriginAccessControl",
+      "cloudfront:UpdateOriginRequestPolicy",
+      "cloudfront:UpdateResponseHeadersPolicy",
+    ]
+    resources = ["*"]
+  }
+
+  # CloudFront 首次创建分发时可能创建服务相关角色。
+  statement {
+    sid       = "CreateCloudFrontServiceLinkedRole"
+    effect    = "Allow"
+    actions   = ["iam:CreateServiceLinkedRole"]
+    resources = ["arn:${local.partition}:iam::${local.account_id}:role/aws-service-role/cloudfront.amazonaws.com/*"]
+  }
+
   statement {
     sid    = "ManageLogBuckets"
     effect = "Allow"
@@ -534,6 +599,7 @@ data "aws_iam_policy_document" "apply_boundary" {
     effect = "Allow"
     actions = [
       "autoscaling:*",
+      "cloudfront:*",
       "ec2:*",
       "kms:*",
       "logs:*",
@@ -594,12 +660,13 @@ data "aws_iam_policy_document" "apply_boundary" {
   statement {
     sid         = "DenyOutsideDeployRegion"
     effect      = "Deny"
-    not_actions = ["iam:*", "sts:*"]
+    not_actions = ["cloudfront:*", "iam:*", "sts:*"]
     resources   = ["*"]
 
     # 用 StringNotEquals 而不是 StringNotEqualsIfExists：IfExists 语句在请求里
     # **没有** aws:RequestedRegion 时也会命中，等于把所有全球型调用全部拒绝。
-    # 全球型服务（IAM、STS）不携带这个键，这里用 NotAction 直接豁免。
+    # 全球型服务（CloudFront、IAM、STS）不携带这个键，这里用 NotAction 直接豁免。
+    # CloudFront 的管理端点固定在 us-east-1，但请求是全局型的，不能按部署区域限制。
     condition {
       test     = "StringNotEquals"
       variable = "aws:RequestedRegion"
