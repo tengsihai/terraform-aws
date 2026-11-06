@@ -4,8 +4,12 @@ github_owner = "tengsihai"
 github_repo  = "terraform-aws"
 
 # Other repositories allowed to assume the plan/apply roles. The react-aws
-# pipeline deploys the static frontend into the site bucket this stack creates.
-additional_github_repos = ["tengsihai/react-aws"]
+# pipeline deploys the static frontend into the site bucket this stack creates;
+# lambda-aws deploys the function that runs behind it.
+additional_github_repos = [
+  "tengsihai/react-aws",
+  "tengsihai/lambda-aws",
+]
 
 # Buckets the pipeline may list (aws s3api head-bucket / aws s3 sync).
 # Object-level Get/Put/Delete are already granted by ManageLogBuckets.
