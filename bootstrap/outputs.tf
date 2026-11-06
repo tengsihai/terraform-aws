@@ -18,6 +18,11 @@ output "apply_role_arns" {
   value       = { for env, role in aws_iam_role.apply : env => role.arn }
 }
 
+output "apply_permissions_boundary_arn" {
+  description = "Permissions boundary attached to every apply role (allowed services, no IAM user credentials, deploy region only)."
+  value       = aws_iam_policy.apply_boundary.arn
+}
+
 output "plan_subject_claims" {
   description = "Subject claims the plan role trusts, in both the legacy and the ID-carrying GitHub format."
   value       = [for prefix in local.repo_subject_prefixes : "${prefix}${var.plan_environment_name}"]

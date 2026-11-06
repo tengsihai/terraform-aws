@@ -58,6 +58,16 @@ variable "state_key_prefix" {
 }
 
 ###############################################################################
+# 部署区域
+###############################################################################
+
+variable "aws_region" {
+  description = "Region the apply roles are allowed to manage (permissions boundary condition) and the region hinted in output."
+  type        = string
+  default     = "ap-northeast-1"
+}
+
+###############################################################################
 # 角色
 ###############################################################################
 
