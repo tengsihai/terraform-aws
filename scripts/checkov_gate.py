@@ -15,10 +15,10 @@ import json
 import sys
 from pathlib import Path
 
-# Checks whose failure means a real, exploitable exposure in this design.
-# Keep this list aligned with docs/RISKS.md.
+# 这些检查一旦失败，就意味着本设计里存在真实可利用的暴露面。
+# 这个清单要和 docs/RISKS.md 保持一致。
 HIGH_RISK_CHECKS: dict[str, str] = {
-    # Network exposure
+    # 网络暴露
     "CKV_AWS_23": "security group rule without a description",
     "CKV_AWS_24": "ingress from 0.0.0.0/0 on port 22",
     "CKV_AWS_25": "ingress from 0.0.0.0/0 on port 3389",
@@ -28,7 +28,7 @@ HIGH_RISK_CHECKS: dict[str, str] = {
     "CKV2_AWS_5": "security group not attached to a resource",
     "CKV2_AWS_12": "default security group allows traffic",
     "CKV2_AWS_11": "VPC flow logs disabled",
-    # Storage exposure and encryption
+    # 存储暴露与加密
     "CKV_AWS_18": "S3 bucket without server access logging",
     "CKV_AWS_19": "S3 bucket without server-side encryption",
     "CKV_AWS_20": "S3 bucket publicly readable",
@@ -39,7 +39,7 @@ HIGH_RISK_CHECKS: dict[str, str] = {
     "CKV_AWS_56": "S3 bucket does not restrict public buckets",
     "CKV_AWS_145": "S3 bucket not encrypted with a KMS CMK",
     "CKV2_AWS_6": "S3 bucket without Public Access Block",
-    # Key management
+    # 密钥管理
     "CKV_AWS_7": "KMS CMK without automatic rotation",
     # IAM
     "CKV_AWS_109": "IAM policy allows permissions management without constraint",

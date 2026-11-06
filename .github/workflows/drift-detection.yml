@@ -1,12 +1,11 @@
 name: Drift detection
 
-# Read-only. Runs a plan against the real backend and reports drift. It never
-# applies and never has write permissions on AWS: the `terraform-plan`
-# environment is bound to the read-only role.
+# 只读。对着真实后端跑 plan 并报告漂移。它从不 apply，
+# 对 AWS 也没有写权限：`terraform-plan` 环境绑定的是只读角色。
 
 on:
   schedule:
-    # 01:00 UTC = 10:00 JST, weekdays.
+    # 01:00 UTC = 日本时间 10:00，工作日。
     - cron: "0 1 * * 1-5"
   workflow_dispatch:
 

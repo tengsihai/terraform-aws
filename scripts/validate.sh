@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Format check + terraform validate for every environment root and bootstrap.
-# Never contacts AWS and never writes remote state.
+# 对所有环境根目录和 bootstrap 做格式检查 + terraform validate。
+# 不访问 AWS，也不写远端 state。
 
 set -euo pipefail
 # shellcheck source=lib.sh source-path=SCRIPTDIR
@@ -32,9 +32,9 @@ log "terraform fmt -check (whole repository)"
 for root in "${ROOTS[@]}"; do
   log "terraform validate: ${root}"
 
-  # A local backend override keeps validation fully offline even when the
-  # directory was last initialised against the real S3 backend. Without it,
-  # `init -backend=false` still tries to resolve the configured remote backend.
+  # 用本地的后端 override 让校验完全离线，即使这个目录上次是
+  # 对着真实 S3 后端初始化的。没有它的话，`init -backend=false`
+  # 仍会尝试解析已配置的远端后端。
   cat >"${ROOT_DIR}/${root}/backend_override.tf" <<'EOF'
 terraform {
   backend "local" {}

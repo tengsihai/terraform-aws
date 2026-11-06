@@ -1,10 +1,10 @@
 locals {
   tags = merge(var.tags, {
     "terraform-module" = "modules/vpc"
-    # Capitalised to merge with the Environment tag the environment root supplies
-    # through var.tags / provider default_tags. AWS tag keys are case-insensitive
-    # in several services (IAM rejects a map holding both "Environment" and
-    # "environment"), so the module must not introduce a second spelling.
+    # 这里用大写的 Environment，是为了和环境根目录通过 var.tags / provider
+    # default_tags 注入的 Environment 合并。多个 AWS 服务的 tag key 是大小写
+    # 不敏感的（IAM 会直接拒绝同时含 "Environment" 和 "environment" 的 map），
+    # 所以模块不能引入第二种拼写。
     "Environment" = var.environment
   })
 
@@ -37,7 +37,7 @@ locals {
   create_flow_log_kms_key = var.flow_logs_enabled && var.flow_logs_kms_key_arn == null
   flow_logs_kms_key_arn   = var.flow_logs_kms_key_arn != null ? var.flow_logs_kms_key_arn : try(aws_kms_key.flow_logs[0].arn, null)
 
-  # Must stay plan-time known: `count` cannot depend on the bucket ARN, which is
-  # only known after the logging module has been applied.
+  # 必须在 plan 阶段就是已知值：count 不能依赖桶 ARN，
+  # 那个值要等 logging 模块 apply 之后才知道。
   enable_s3_flow_log = var.flow_logs_enabled && var.flow_logs_s3_enabled
 }

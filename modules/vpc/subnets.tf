@@ -1,8 +1,8 @@
 ###############################################################################
-# Subnets
+# 子网
 #
-# IPv6: the VPC receives a /56; each subnet carves a /64 out of it with
-# cidrsubnet(..., 8, netnum).
+# IPv6：VPC 拿到一个 /56，每个子网用 cidrsubnet(..., 8, netnum)
+# 从中切出一个 /64。
 ###############################################################################
 
 resource "aws_subnet" "public" {
@@ -14,8 +14,8 @@ resource "aws_subnet" "public" {
   availability_zone = each.value.az
   ipv6_cidr_block   = var.ipv6_enabled ? cidrsubnet(aws_vpc.this.ipv6_cidr_block, 8, each.value.ipv6_netnum) : null
 
-  # Secure default: public subnets do not hand out public IPv4 addresses
-  # implicitly. Workloads that truly need one attach an EIP explicitly.
+  # 安全默认值：公网子网不会隐式分配公网 IPv4 地址。
+  # 确实需要的工作负载显式绑一个 EIP。
   map_public_ip_on_launch         = var.map_public_ip_on_launch
   assign_ipv6_address_on_creation = var.ipv6_enabled ? var.assign_ipv6_address_on_creation : false
 
@@ -36,8 +36,8 @@ resource "aws_subnet" "private" {
 
   map_public_ip_on_launch = false
 
-  # Private IPv6 is available but opt-in per ENI: there is no stateful
-  # firewall in front of these subnets, so assignment is explicit.
+  # 私网子网有 IPv6 段，但按 ENI 逐个开启：这些子网前面没有状态防火墙，
+  # 所以地址分配保持显式。
   assign_ipv6_address_on_creation = false
 
   tags = merge(local.tags, {

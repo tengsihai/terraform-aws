@@ -36,3 +36,7 @@ bootstrap/terraform.tfvars
 .idea/
 .vscode/
 *.swp
+
+# Python 缓存
+__pycache__/
+*.pyc

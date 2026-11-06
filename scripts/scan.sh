@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 #
-# Runs Checkov over the whole repository and fails when a finding matches the
-# high-risk rule set in scripts/checkov_gate.py.
+# 对整个仓库跑 Checkov，命中 scripts/checkov_gate.py 里的高危规则集时失败。
 #
-# Suppressions live next to the code as inline `#checkov:skip=<id>:<reason>`
-# comments, so this script never carries a blanket skip list.
+# 豁免以内联 `#checkov:skip=<id>:<理由>` 的形式写在代码旁边，
+# 所以本脚本不携带任何全局跳过清单。
 
 set -euo pipefail
 # shellcheck source=lib.sh source-path=SCRIPTDIR

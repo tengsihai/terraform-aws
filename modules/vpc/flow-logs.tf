@@ -1,10 +1,10 @@
 ###############################################################################
-# VPC flow logs
+# VPC 流量日志
 #
-# Primary destination: CloudWatch Logs, encrypted with a dedicated rotating CMK
-# and readable at 60-second granularity (needed for security triage).
-# Optional second destination: the encrypted S3 log bucket, for retention
-# beyond the CloudWatch Logs retention window.
+# 主要目标端：CloudWatch Logs，用专门的轮转 CMK 加密，
+# 60 秒粒度（安全排查需要这个精度）。
+# 可选第二目标端：加密的 S3 日志桶，用于超出 CloudWatch Logs
+# 保留窗口的长期留存。
 ###############################################################################
 
 resource "aws_kms_key" "flow_logs" {
@@ -164,7 +164,7 @@ resource "aws_flow_log" "s3" {
   log_destination_type = "s3"
   log_destination      = var.flow_logs_s3_bucket_arn
 
-  # Include the fields security triage needs. `${version}` must come first.
+  # 包含安全排查需要的字段。`${version}` 必须放在最前面。
   log_format = "$${version} $${account-id} $${interface-id} $${srcaddr} $${dstaddr} $${srcport} $${dstport} $${protocol} $${packets} $${bytes} $${start} $${end} $${action} $${log-status} $${vpc-id} $${subnet-id} $${instance-id} $${tcp-flags} $${type} $${pkt-srcaddr} $${pkt-dstaddr}"
 
   max_aggregation_interval = var.flow_logs_max_aggregation_interval

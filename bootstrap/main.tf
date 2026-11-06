@@ -1,14 +1,14 @@
 ###############################################################################
-# CI/CD bootstrap: GitHub OIDC provider + least-privilege Terraform roles
+# CI/CD 引导配置：GitHub OIDC provider + 最小权限的 Terraform 角色
 #
-# Apply this ONCE per account with administrator credentials. It creates:
-#   * the GitHub OIDC identity provider
-#   * a read-only plan role          (used by plan + drift detection)
-#   * one write-capable apply role   per environment
+# 每个账户只需用管理员凭据执行一次，它会创建：
+#   * GitHub OIDC 身份提供方
+#   * 一个只读的 plan 角色（plan 与 drift 检测使用）
+#   * 每个环境一个具备写权限的 apply 角色
 #
-# Scope of the trust: a workflow can only assume a role from the exact GitHub
-# environment named in the subject claim. Fork pull requests never receive an
-# OIDC token, and an unprotected environment cannot mint a protected one.
+# 信任范围：工作流只有在 sub 声明指定的那个 GitHub Environment 上下文中，
+# 才能换取角色。fork 出来的 PR 拿不到 OIDC token，未受保护的环境也无法
+# 签发受环境约束的凭证。
 ###############################################################################
 
 data "aws_caller_identity" "current" {}
@@ -24,14 +24,14 @@ locals {
 
   repo_subject = "repo:${var.github_owner}/${var.github_repo}"
 
-  # GitHub changed the OIDC subject claim to carry the owner and repository
-  # numeric IDs, so the same workflow now produces BOTH of these:
+  # GitHub 把 OIDC 的 sub 声明改成了带上 owner 和仓库的数字 ID，
+  # 所以同一个工作流现在可能发出下面两种格式：
   #
-  #   repo:tengsihai/terraform-aws:environment:dev                       (legacy)
-  #   repo:tengsihai@40748495/terraform-aws@1445773765:environment:dev   (current)
+  #   repo:tengsihai/terraform-aws:environment:dev                       （旧格式）
+  #   repo:tengsihai@40748495/terraform-aws@1445773765:environment:dev   （当前格式）
   #
-  # Trust both. The login and the repository name are pinned, and logins cannot
-  # contain '@', so the wildcarded numeric IDs do not widen the trust.
+  # 两种都信任。login 和仓库名是精确匹配的，而且 login 不能包含 '@'，
+  # 所以这里对数字 ID 用通配符并不会放宽信任范围。
   repo_subject_prefixes = [
     "${local.repo_subject}:environment:",
     "repo:${var.github_owner}@*/${var.github_repo}@*:environment:",
@@ -44,7 +44,7 @@ locals {
 }
 
 ###############################################################################
-# OIDC provider
+# OIDC 身份提供方
 ###############################################################################
 
 resource "aws_iam_openid_connect_provider" "github" {
@@ -58,7 +58,7 @@ resource "aws_iam_openid_connect_provider" "github" {
 }
 
 ###############################################################################
-# Shared: remote state access
+# 公共部分：远端 state 的访问权限
 ###############################################################################
 
 data "aws_iam_policy_document" "state_access" {
@@ -76,9 +76,8 @@ data "aws_iam_policy_document" "state_access" {
     resources = ["${local.state_bucket_arn}/${var.state_key_prefix}/*"]
   }
 
-  # S3-native locking (use_lockfile = true) writes <key>.tflock and must be able
-  # to delete it again. Scoped to lock files only: the pattern cannot match the
-  # state object itself.
+  # S3 原生锁（use_lockfile = true）会写入 <key>.tflock，也必须能把它删掉。
+  # 这里只作用于锁文件：这个模式匹配不到 state 对象本身。
   statement {
     sid       = "ManageStateLockFiles"
     effect    = "Allow"
@@ -99,7 +98,7 @@ data "aws_iam_policy_document" "state_access" {
 }
 
 ###############################################################################
-# Shared: read-only access Terraform needs to produce a plan
+# 公共部分：生成 plan 所需的只读权限
 ###############################################################################
 
 data "aws_iam_policy_document" "plan_read" {
@@ -112,11 +111,10 @@ data "aws_iam_policy_document" "plan_read" {
     resources = ["*"]
   }
 
-  # The S3 refresh path calls a fixed set of bucket-configuration APIs. Some
-  # IAM action names differ from the API name (GetAccelerateConfiguration vs
-  # GetBucketAccelerateConfiguration) and IAM silently ignores unknown action
-  # names, so both spellings are listed. Neither spelling grants object reads:
-  # s3:GetObject is authorised on object ARNs and is not listed here.
+  # 刷新 S3 桶时会调用一组固定的桶配置 API。有些 IAM action 名和 API 名不一致
+  # （GetAccelerateConfiguration 与 GetBucketAccelerateConfiguration），而 IAM
+  # 对未知 action 名是静默忽略的，所以两种拼写都列上。这两种写法都不授予对象读取：
+  # s3:GetObject 是作用在对象 ARN 上的，这里没有列。
   statement {
     sid    = "ReadStorageConfig"
     effect = "Allow"
@@ -197,7 +195,7 @@ data "aws_iam_policy_document" "plan_read" {
 }
 
 ###############################################################################
-# Apply: mutations this stack performs
+# Apply：本套配置会执行的变更操作
 ###############################################################################
 
 data "aws_iam_policy_document" "apply_mutations" {
@@ -334,7 +332,7 @@ data "aws_iam_policy_document" "apply_mutations" {
 }
 
 ###############################################################################
-# Role definitions
+# 角色定义
 ###############################################################################
 
 data "aws_iam_policy_document" "plan_permissions" {
