@@ -6,7 +6,8 @@
 ```
 PR 提交
   │
-  ├─ pr-checks.yml       fmt · validate · tflint · shellcheck/actionlint · checkov
+  ├─ pr-checks.yml       fmt · validate · 标签合规 · 模块测试 · tflint ·
+  │                      shellcheck/actionlint · checkov
   │                      （无 AWS 凭据，fork PR 也跑）
   │
   └─ plan.yml            只读角色 → terraform plan → 计划摘要粘到 PR
@@ -79,7 +80,7 @@ apply_role_arns = {
 > 该环境的变量，`plan.yml` 会直接失败。
 
 **合并就是审批。** 自动部署路径上 `dev` 不设 required reviewers——把关发生在 PR 阶段：
-必须走 PR、必须过 4 项 required status checks、由人点合并。
+必须走 PR、必须过全部 required status checks、由人点合并。
 `staging` / `prod` 在接入 `TF_ENVIRONMENTS` 之前必须把 required reviewers 加回来，
 否则合并一次就把生产改了。
 
@@ -120,7 +121,7 @@ apply_role_arns = {
 | --- | --- |
 | Require a pull request before merging | 必须走 PR，**不允许直接 push** |
 | Required approvals | 0（单人仓库；有第二个人时建议提到 1） |
-| Require status checks | `fmt + validate`、`tflint`、`shellcheck + actionlint`、`checkov` |
+| Require status checks | `fmt + validate`、`terraform test (bastion)`、`terraform test (rds-mysql)`、`tflint`、`shellcheck + actionlint`、`checkov` |
 | Require branches to be up to date | 开 |
 | Block force pushes / deletion | 开 |
 
@@ -148,7 +149,7 @@ git push origin feature/xxx
 
 ### 合并 = 部署
 
-4 项检查全绿后，直接合并。合并后自动发生：
+全部 required checks 全绿后，直接合并。合并后自动发生：
 
 1. `plan.yml` 在 main 上出权威 plan 并上传工件；
 2. `apply.yml` 由该 plan 完成自动触发，校验后 apply。
@@ -199,7 +200,8 @@ terraform apply "<下载的 tfplan>"
 唯一的执行路径是 `apply.yml`，它由「合并到 main」触发，把关点是：
 
 - **必须走 PR**：main 上的 ruleset 禁止直接 push；
-- **必须过 4 项 required status checks**：fmt/validate、tflint、shellcheck/actionlint、checkov；
+- **必须过全部 required status checks**：fmt/validate + 标签合规、`terraform test (bastion)`、
+  `terraform test (rds-mysql)`、tflint、shellcheck/actionlint、checkov；
 - **必须由人点合并**：合并这个动作就是审批；
 - 执行对象是该次合并产生的不可变 plan 工件，不是现场重新计算的计划；
 - `staging` / `prod` 接入时把 required reviewers 加回 `apply.yml` 绑定的 Environment，
@@ -213,6 +215,8 @@ terraform apply "<下载的 tfplan>"
 | --- | --- |
 | `terraform fmt -check` | 格式漂移导致的无意义 diff |
 | `terraform validate` | 语法、类型、变量约束错误 |
+| `terraform test` | 模块的 plan 断言：ASG 容量、无密钥对、单 AZ、无公网访问、安全组来源等 |
+| 标签合规 | 任一可打标签资源缺少 `Project` / `Environment` / `ManagedBy` / `Repository` |
 | `tflint` | provider 用法错误、未使用声明、AWS 规则 |
 | `shellcheck` | 脚本引号、未定义变量、错误处理 |
 | `actionlint` | workflow 语法、表达式、shellcheck 检查内联脚本 |

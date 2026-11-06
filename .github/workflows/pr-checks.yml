@@ -53,6 +53,36 @@ jobs:
       - name: terraform validate
         run: ./scripts/validate.sh
 
+      - name: Tag compliance
+        # 依赖离线 plan：检查每个可打标签的资源是否带 Project/Environment/ManagedBy/Repository。
+        run: make check-tags
+
+  module-tests:
+    name: terraform test (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [bastion, rds-mysql]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform init
+        run: terraform -chdir=modules/${{ matrix.module }} init -backend=false -input=false -no-color
+
+      - name: terraform test
+        run: terraform -chdir=modules/${{ matrix.module }} test -no-color
+
   tflint:
     name: tflint
     runs-on: ubuntu-latest
