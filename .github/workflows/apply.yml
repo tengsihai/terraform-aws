@@ -126,6 +126,7 @@ jobs:
           path: ${{ runner.temp }}/plan
 
       - name: Verify the plan artifact
+        id: verify
         shell: bash
         env:
           ENVIRONMENT: ${{ matrix.environment }}
@@ -166,12 +167,22 @@ jobs:
             exit 1
           fi
 
-          if [ "$(jq -r '.applyable // false' plan.json)" != "true" ]; then
-            echo "::error::plan is not applyable (it was not a clean, error-free plan)"
+          # `applyable` is false for a plan with NO CHANGES, which is the normal
+          # outcome of a merge that does not touch infrastructure. `complete`
+          # and `errored` are what separate a clean no-op from a broken plan.
+          if [ "$(jq -r '.complete // false' plan.json)" != "true" ] \
+            || [ "$(jq -r '.errored // false' plan.json)" = "true" ]; then
+            echo "::error::plan is incomplete or errored; refusing to apply"
             exit 1
           fi
 
-          echo "plan verified: ${age_hours}h old, sha256 ${actual_sum}"
+          if [ "$(jq -r '.applyable // false' plan.json)" = "true" ]; then
+            echo "has_changes=true" >> "${GITHUB_OUTPUT}"
+            echo "plan verified: ${age_hours}h old, sha256 ${actual_sum}"
+          else
+            echo "has_changes=false" >> "${GITHUB_OUTPUT}"
+            echo "plan has no changes; the apply step will be skipped"
+          fi
 
       - name: Terraform init
         id: init
@@ -200,6 +211,7 @@ jobs:
           fi
 
       - name: terraform apply (saved plan only)
+        if: steps.verify.outputs.has_changes == 'true'
         shell: bash
         env:
           ENVIRONMENT: ${{ matrix.environment }}
@@ -222,9 +234,16 @@ jobs:
           ENVIRONMENT: ${{ matrix.environment }}
           PLAN_URL: ${{ steps.plan_run.outputs.plan_url }}
           PLAN_DIR: ${{ runner.temp }}/plan
+          HAS_CHANGES: ${{ steps.verify.outputs.has_changes }}
         run: |
           {
             echo "## Apply ${ENVIRONMENT}"
+            echo ""
+            if [ "${HAS_CHANGES}" = "true" ]; then
+              echo "Applied the reviewed plan."
+            else
+              echo "**No changes to apply.** The plan matched the deployed state."
+            fi
             echo ""
             echo "- Reviewed plan: ${PLAN_URL}"
             echo "- Commit: \`${{ steps.plan_run.outputs.head_sha }}\`"
