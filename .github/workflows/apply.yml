@@ -1,11 +1,13 @@
 name: Terraform apply
 
-# 应用 main 上产出的 plan 工件。合并本身即审批：
+# 应用环境分支上产出的 plan 工件。合并本身即审批：
 #
-#   PR -> 必须通过的检查 -> 人工合并 -> main 上出 plan -> apply
+#   PR -> 必须通过的检查 -> 人工合并到 dev/staging/prod -> 该分支上出 plan -> apply
 #
-# 自动路径没有额外的审批步骤。staging 和 production 在加入 TF_ENVIRONMENTS
-# 之前，必须先把 required reviewers 在对应的 GitHub Environment 上加回来。
+# 分支即环境：plan run 的 head_branch 就是环境名。仓库变量 TF_ENVIRONMENTS
+# 仍然是「哪些环境已接入自动部署」的开关（默认 ["dev"]）。
+# 自动路径没有额外的审批步骤；staging / production 接入前必须先把 required
+# reviewers 加到对应的 GitHub Environment 上。
 #
 # 这里刻意不提供 workflow_dispatch：失败后要重放，直接重跑失败的 apply job
 # （它应用的是同一份 plan；如果底层 state 变了，Terraform 的陈旧检查会拒绝）。
@@ -28,26 +30,28 @@ env:
 
 jobs:
   apply:
-    name: apply (${{ matrix.environment }})
-    # 只应用「main 上由 push（即一次合并）产生的 plan」。
+    name: apply (${{ github.event.workflow_run.head_branch }})
+    # 只应用「环境分支上由 push（即一次合并）产生的 plan」。
     # PR 产生的 plan（head_branch 是功能分支）和手动触发的 plan 在这里一律忽略。
+    # TF_ENVIRONMENTS 决定哪些环境允许自动部署。
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.event == 'push'
+      github.event.workflow_run.event == 'push' &&
+      contains(fromJSON('["dev", "staging", "prod"]'), github.event.workflow_run.head_branch) &&
+      contains(fromJSON(vars.TF_ENVIRONMENTS || '["dev"]'), github.event.workflow_run.head_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # 这里提供该环境的 apply 角色 ARN；如果某个环境需要独立于合并再卡一道，
     # 就在这个 Environment 上加 required reviewers。
-    environment: ${{ matrix.environment }}
-    strategy:
-      fail-fast: false
-      matrix:
-        environment: ${{ fromJSON(vars.TF_ENVIRONMENTS || '["dev"]') }}
+    environment: ${{ github.event.workflow_run.head_branch }}
+
+    env:
+      ENVIRONMENT: ${{ github.event.workflow_run.head_branch }}
 
     # 绝不取消进行中的 apply：半途而废的 apply 比排队等待糟糕得多。
     concurrency:
-      group: terraform-apply-${{ matrix.environment }}
+      # concurrency.group 不支持 env 上下文，这里直接用 github 上下文。
+      group: terraform-apply-${{ github.event.workflow_run.head_branch }}
       cancel-in-progress: false
 
     steps:
@@ -81,13 +85,13 @@ jobs:
           case "${event}" in
             push | workflow_dispatch) ;;
             *)
-              echo "::error::plan run ${PLAN_RUN_ID} came from '${event}'; only push/workflow_dispatch runs on main are accepted"
+              echo "::error::plan run ${PLAN_RUN_ID} came from '${event}'; only push/workflow_dispatch runs on an environment branch are accepted"
               exit 1
               ;;
           esac
 
-          if [ "${branch}" != "main" ]; then
-            echo "::error::plan run ${PLAN_RUN_ID} ran on '${branch}', not main"
+          if [ "${branch}" != "${ENVIRONMENT}" ]; then
+            echo "::error::plan run ${PLAN_RUN_ID} ran on '${branch}', not the ${ENVIRONMENT} branch"
             exit 1
           fi
 
@@ -96,9 +100,9 @@ jobs:
             exit 1
           fi
 
-          main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
-          if [ "${sha}" != "${main_sha}" ]; then
-            echo "::error::main moved since this plan was produced (plan ${sha:0:12}, main ${main_sha:0:12}); a newer plan will be applied by its own run"
+          branch_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${ENVIRONMENT}" --jq '.object.sha')"
+          if [ "${sha}" != "${branch_sha}" ]; then
+            echo "::error::${ENVIRONMENT} moved since this plan was produced (plan ${sha:0:12}, ${ENVIRONMENT} ${branch_sha:0:12}); a newer plan will be applied by its own run"
             exit 1
           fi
 
@@ -116,7 +120,7 @@ jobs:
       - name: Download the plan artifact
         uses: actions/download-artifact@v8
         with:
-          name: terraform-plan-${{ matrix.environment }}
+          name: terraform-plan-${{ env.ENVIRONMENT }}
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ${{ runner.temp }}/plan
@@ -125,7 +129,7 @@ jobs:
         id: verify
         shell: bash
         env:
-          ENVIRONMENT: ${{ matrix.environment }}
+          ENVIRONMENT: ${{ env.ENVIRONMENT }}
           PLAN_DIR: ${{ runner.temp }}/plan
           EXPECTED_SHA: ${{ steps.plan_run.outputs.head_sha }}
         run: |
@@ -184,7 +188,7 @@ jobs:
         id: init
         uses: ./.github/actions/terraform-init
         with:
-          environment: ${{ matrix.environment }}
+          environment: ${{ env.ENVIRONMENT }}
           role-arn: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           state-bucket: ${{ vars.TF_STATE_BUCKET }}
@@ -194,7 +198,7 @@ jobs:
       - name: Confirm account matches env.tfvars
         shell: bash
         env:
-          ENVIRONMENT: ${{ matrix.environment }}
+          ENVIRONMENT: ${{ env.ENVIRONMENT }}
           ACTUAL_ACCOUNT: ${{ steps.init.outputs.account-id }}
         run: |
           set -euo pipefail
@@ -210,7 +214,7 @@ jobs:
         if: steps.verify.outputs.has_changes == 'true'
         shell: bash
         env:
-          ENVIRONMENT: ${{ matrix.environment }}
+          ENVIRONMENT: ${{ env.ENVIRONMENT }}
           PLAN_FILE: ${{ runner.temp }}/plan/tfplan
         run: |
           set -euo pipefail
@@ -227,7 +231,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          ENVIRONMENT: ${{ matrix.environment }}
+          ENVIRONMENT: ${{ env.ENVIRONMENT }}
           PLAN_URL: ${{ steps.plan_run.outputs.plan_url }}
           PLAN_DIR: ${{ runner.temp }}/plan
           HAS_CHANGES: ${{ steps.verify.outputs.has_changes }}
@@ -258,7 +262,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: apply-${{ matrix.environment }}-${{ github.run_id }}
+          name: apply-${{ env.ENVIRONMENT }}-${{ github.run_id }}
           path: ${{ runner.temp }}/plan/
           retention-days: 30
           if-no-files-found: ignore

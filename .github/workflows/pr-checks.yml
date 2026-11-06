@@ -1,11 +1,12 @@
 name: PR checks
 
 # 快速的、无需凭据的检查。这个工作流从不访问 AWS，所以 fork 出来的 PR 也会跑。
+# 分支即环境：PR 的目标分支和被推送的分支都是 dev / staging / prod（main 为归档分支）。
 
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, dev, staging, prod]
 
 permissions:
   contents: read
