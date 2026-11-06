@@ -144,6 +144,35 @@ variable "enable_s3_flow_logs" {
   default     = false
 }
 
+variable "cloudfront_price_class" {
+  description = "CloudFront edge set for the static site. PriceClass_200 includes Asia, matching the origin region."
+  type        = string
+  default     = "PriceClass_200"
+
+  validation {
+    condition     = contains(["PriceClass_100", "PriceClass_200", "PriceClass_All"], var.cloudfront_price_class)
+    error_message = "cloudfront_price_class must be one of: PriceClass_100, PriceClass_200, PriceClass_All."
+  }
+}
+
+variable "site_default_root_object" {
+  description = "Object returned for requests to the static site root."
+  type        = string
+  default     = "index.html"
+}
+
+variable "site_spa_mode" {
+  description = "Map 403/404 to the root object with HTTP 200 so client-side routers can handle deep links."
+  type        = bool
+  default     = false
+}
+
+variable "site_force_destroy" {
+  description = "Allow Terraform to delete the static site bucket even when it still holds objects. Keep false outside disposable sandboxes."
+  type        = bool
+  default     = false
+}
+
 variable "bastion_ami_id" {
   description = "Amazon Linux 2023 (arm64) AMI ID for the bastion. Refresh it from the public SSM parameter before rebuilding the instance."
   type        = string

@@ -14,6 +14,9 @@ locals {
   # S3 桶名全局唯一；用账户 ID + 区域就能稳定复现，
   # 不需要加随机后缀。
   log_bucket_name = "${local.name_prefix}-logs-${var.aws_account_id}-${var.aws_region}"
+
+  # 静态站点源站桶。和数据桶一样，桶名用账户 ID + 区域稳定复现。
+  site_bucket_name = "${local.name_prefix}-site-${var.aws_account_id}-${var.aws_region}"
 }
 
 module "logging" {
@@ -32,6 +35,30 @@ module "logging" {
   force_destroy                = false
 
   tags = local.common_tags
+}
+
+module "site" {
+  source = "../../modules/cloudfront-s3"
+
+  name        = local.name_prefix
+  environment = local.environment
+  account_id  = var.aws_account_id
+
+  bucket_name   = local.site_bucket_name
+  log_bucket_id = module.logging.bucket_id
+
+  # dev 使用允许的最短 KMS 待删除窗口。
+  kms_deletion_window_in_days = 7
+
+  default_root_object = var.site_default_root_object
+  spa_mode            = var.site_spa_mode
+  price_class         = var.cloudfront_price_class
+  force_destroy       = var.site_force_destroy
+
+  tags = local.common_tags
+
+  # 日志桶的桶策略必须先存在，S3 才能接受访问日志投递配置。
+  depends_on = [module.logging]
 }
 
 module "vpc" {

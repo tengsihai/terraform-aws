@@ -29,7 +29,7 @@ validate:
 	./scripts/validate.sh
 
 test:
-	@set -e; for module in bastion rds-mysql; do \
+	@set -e; for module in bastion rds-mysql cloudfront-s3; do \
 		echo "==> terraform test: $$module"; \
 		terraform -chdir="modules/$$module" init -backend=false -input=false -no-color >/dev/null; \
 		terraform -chdir="modules/$$module" test -no-color; \
