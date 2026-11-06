@@ -236,6 +236,24 @@ terraform apply "<下载的 tfplan>"
 | drift issue 每天重复开 | 正常情况只会更新同一个 issue；标题为 `[drift] <env>` |
 | `checkov` 失败 | 看 `reports/checkov-*/checkov-cli.txt`；修复问题，或在受影响资源上写 `#checkov:skip=<id>:<理由>` |
 
+## 7.1 操作红线
+
+| 红线 | 原因 |
+| --- | --- |
+| **不要对运行中的 apply 执行 `gh run rerun`** | rerun 会**取消正在执行的 apply** 并重新开始，留下部分创建的资源。`terraform apply` 被打断是这套体系里最危险的操作之一 |
+| 不要在 apply 运行时动 `TF_ENVIRONMENTS` | 同上，改变 environment 保护规则会取消等待中的 deployment |
+| 出现 `Saved plan is stale` 不要 force-unlock | 这说明 state 已经前进。正确做法：重新出 plan，apply 会把已建资源识别为已存在，增量补齐剩余部分 |
+
+**部分 apply 的恢复流程**（本次事故验证过）：
+
+1. `Saved plan is stale` 出现，说明 state 与 plan 不一致，但**已创建的资源仍然合法存在**；
+2. 确认没有残留锁：`aws s3api head-object --bucket <bucket> --key <key>.tflock`；
+3. 重跑 `plan.yml`（合并产生的 plan run 直接 `gh run rerun <plan run id>`，或推一个新提交）；
+4. 新 plan 会把已建资源视为 no-op，只补齐剩余部分；
+5. apply 自动触发，恢复到完整状态。
+
+如果部分 apply 是因为 IAM 权限不足，先补 `bootstrap` 的策略再走第 3 步。
+
 ## 8. 已知限制
 
 - **required reviewers 无法用代码配置**，必须在 GitHub UI 手工设置。

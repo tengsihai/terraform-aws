@@ -112,27 +112,40 @@ data "aws_iam_policy_document" "plan_read" {
     resources = ["*"]
   }
 
+  # The S3 refresh path calls a fixed set of bucket-configuration APIs. Some
+  # IAM action names differ from the API name (GetAccelerateConfiguration vs
+  # GetBucketAccelerateConfiguration) and IAM silently ignores unknown action
+  # names, so both spellings are listed. Neither spelling grants object reads:
+  # s3:GetObject is authorised on object ARNs and is not listed here.
   statement {
     sid    = "ReadStorageConfig"
     effect = "Allow"
     actions = [
+      "s3:GetAccelerateConfiguration",
+      "s3:GetBucketAccelerateConfiguration",
       "s3:GetBucketAcl",
       "s3:GetBucketCORS",
       "s3:GetBucketEncryption",
       "s3:GetBucketLifecycleConfiguration",
       "s3:GetBucketLocation",
       "s3:GetBucketLogging",
+      "s3:GetBucketNotification",
+      "s3:GetBucketNotificationConfiguration",
       "s3:GetBucketObjectLockConfiguration",
       "s3:GetBucketOwnershipControls",
       "s3:GetBucketPolicy",
       "s3:GetBucketPublicAccessBlock",
+      "s3:GetBucketRequestPayment",
       "s3:GetBucketTagging",
       "s3:GetBucketVersioning",
+      "s3:GetBucketWebsite",
       "s3:GetEncryptionConfiguration",
       "s3:GetLifecycleConfiguration",
       "s3:GetReplicationConfiguration",
+      "s3:GetRequestPaymentConfiguration",
       "s3:ListAllMyBuckets",
       "s3:ListBucket",
+      "s3:ListBucketVersions",
     ]
     resources = ["*"]
   }
@@ -198,9 +211,11 @@ data "aws_iam_policy_document" "apply_mutations" {
     effect = "Allow"
     actions = [
       "ec2:AssociateRouteTable",
+      "ec2:AttachInternetGateway",
       "ec2:AuthorizeSecurityGroupEgress",
       "ec2:AuthorizeSecurityGroupIngress",
       "ec2:CreateEgressOnlyInternetGateway",
+      "ec2:CreateFlowLogs",
       "ec2:CreateInternetGateway",
       "ec2:CreateRoute",
       "ec2:CreateRouteTable",
@@ -210,6 +225,7 @@ data "aws_iam_policy_document" "apply_mutations" {
       "ec2:CreateVpc",
       "ec2:CreateVpcEndpoint",
       "ec2:DeleteEgressOnlyInternetGateway",
+      "ec2:DeleteFlowLogs",
       "ec2:DeleteInternetGateway",
       "ec2:DeleteRoute",
       "ec2:DeleteRouteTable",
@@ -246,6 +262,8 @@ data "aws_iam_policy_document" "apply_mutations" {
       "s3:PutBucketPublicAccessBlock",
       "s3:PutBucketTagging",
       "s3:PutBucketVersioning",
+      "s3:PutEncryptionConfiguration",
+      "s3:PutLifecycleConfiguration",
       "s3:PutObject",
       "s3:PutObjectTagging",
     ]
