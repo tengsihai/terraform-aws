@@ -55,6 +55,13 @@ has_aws_credentials() {
   if [ -n "${AWS_PROFILE:-}" ] || [ -f "${HOME}/.aws/credentials" ]; then
     return 0
   fi
+  # An AWS CLI "login" session stores no credentials file, so the checks above
+  # miss it and plan.sh would silently fall back to offline mode. Ask the CLI
+  # whether it can export a session instead.
+  if command -v aws >/dev/null 2>&1 \
+    && aws configure export-credentials --format env >/dev/null 2>&1; then
+    return 0
+  fi
   return 1
 }
 
