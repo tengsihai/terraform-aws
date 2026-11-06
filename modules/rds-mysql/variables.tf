@@ -136,6 +136,23 @@ variable "kms_key_arn" {
   default     = null
 }
 
+variable "performance_insights_enabled" {
+  description = "Enable Performance Insights. Off by default because db.t4g.micro does not support it; AWS rejects the combination with InvalidParameterCombination."
+  type        = bool
+  default     = false
+}
+
+variable "performance_insights_retention_period" {
+  description = "Performance Insights retention in days. 7 is the free tier; 731 is paid retention."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = contains([7, 731], var.performance_insights_retention_period)
+    error_message = "performance_insights_retention_period must be 7 or 731."
+  }
+}
+
 variable "tags" {
   description = "Additional tags merged into every taggable resource."
   type        = map(string)
