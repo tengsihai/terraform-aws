@@ -227,7 +227,7 @@ rm -f /tmp/state-bucket-policy.json
 
 ### R-05 未启用 Interface 端点导致 SSM/ECR 不可用
 
-- **场景**：`interface_endpoint_services` 默认为空。
+- **场景**：`interface_endpoint_services` 默认为空（目前只有 dev 开了 `secretsmanager`，ssm/ecr 仍未开）。
 - **影响**：私网实例无法用 Session Manager 登录，无法从 ECR 拉镜像——大多数容器化工作负载会直接起不来。
 - **缓解**：按需打开 `["ssm","ssmmessages","ec2messages","ecr.api","ecr.dkr","logs"]`；
   成本 = 端点数量 × AZ 数 × 小时单价 + 数据处理费。上线前需成本确认。

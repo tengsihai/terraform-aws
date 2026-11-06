@@ -6,7 +6,7 @@
 #   * 只放在私网子网，publicly_accessible = false
 #   * 主用户密码不经过 Terraform：manage_master_user_password = true
 #     让 RDS 在 Secrets Manager 里生成、托管并自动轮转密码
-#   * 入站只允许显式列出的安全组（跳板机），没有其他来源
+#   * 入站只允许显式列出的安全组（跳板机、Lambda），没有其他来源
 #   * 实例没有任何出站规则：RDS 的数据面不需要主动外连
 ###############################################################################
 
@@ -38,11 +38,13 @@ resource "aws_security_group" "this" {
 # 每条允许的安全组单独一条规则，plan 里能逐条看到从哪里能连进来。
 # 用 count 而不是 for_each：安全组 ID 是 apply 后才知道的值，
 # for_each 的 key 必须在 plan 期确定，count 只需要长度已知。
+# 因此 description 只能是通用文案——无法按来源区分，真正的来源看每条规则的
+# referenced_security_group_id。
 resource "aws_vpc_security_group_ingress_rule" "mysql" {
   count = length(var.allowed_security_group_ids)
 
   security_group_id            = aws_security_group.this.id
-  description                  = "MySQL from an explicitly allowed security group (the bastion)."
+  description                  = "MySQL from an explicitly allowed security group."
   ip_protocol                  = "tcp"
   from_port                    = var.port
   to_port                      = var.port

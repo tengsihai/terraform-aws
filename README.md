@@ -117,7 +117,8 @@ feat/xxx ──PR──► dev ──PR──► staging ──PR──► prod 
 | 跳板机容量 | ASG min 0 / max 1 / desired 0 | 同左 | 同左 |
 | 跳板机登录方式 | 公有子网 + IGW 直连 SSM 公网端点（无 SSH、无密钥对、无 EIP） | 同左 | 同左 |
 | SSM Interface 端点 | 不创建 | 不创建 | 不创建 |
-| 预期 plan | 53 add | 54 add | 54 add |
+| Secrets Manager Interface 端点 | 创建 | 不创建 | 不创建 |
+| 预期 plan | 57 add | 56 add | 56 add |
 
 ## 数据库与跳板机
 
@@ -130,7 +131,7 @@ feat/xxx ──PR──► dev ──PR──► staging ──PR──► prod 
 ```
 
 - **RDS**：`manage_master_user_password = true`，Terraform 不接触明文密码。
-  Security Group 只有一条来自跳板机安全组的 3306 入站规则，没有出站规则；
+  Security Group 有两条 3306 入站规则（跳板机、Lambda），没有出站规则；
   `publicly_accessible = false`、单 AZ。
 - **跳板机**：纯 ASG 方案。`min=0 / max=1 / desired=0`，空闲时没有实例，
   不产生计算和 EBS 费用。启动模板为 AL2023 arm64 + `t4g.micro`，
@@ -185,8 +186,8 @@ aws autoscaling set-desired-capacity --region ap-northeast-1 \
 `ssm:StartSession` 授权，文档 ARN 才是限制点。
 
 成本提示：跳板机空闲时为零成本；运行期间按 t4g.micro + 8 GiB gp3 + 公网 IPv4
-计费（公网 IPv4 与是否绑定 EIP 无关）。不创建 Interface 端点，因此没有端点
-AZ-hour 费用。
+计费（公网 IPv4 与是否绑定 EIP 无关）。跳板机不用任何 Interface 端点；
+Interface 端点只有 dev 的 `secretsmanager` 一个（按 AZ-hour 计费）。
 
 
 ## 快速开始
@@ -272,7 +273,8 @@ Checkov 的 severity 元数据只在接入 Prisma Cloud 平台时才完整，离
 | 传输加密 | 桶策略 Deny 所有 `aws:SecureTransport=false` |
 | 网络审计 | VPC flow logs，`ALL`，60s 聚合，KMS 加密 |
 | 公网 IP | `map_public_ip_on_launch = false`；只有跳板机在启动模板里显式启用公网 IPv4（无 EIP、无入站） |
-| 数据库不暴露 | RDS 在私网子网，`publicly_accessible = false`，入站只来自跳板机安全组 |
+| 数据库不暴露 | RDS 在私网子网，`publicly_accessible = false`，入站只来自跳板机与 Lambda 两张安全组 |
+| Lambda 出站收窄 | Lambda 安全组零入站，只有 3306 / 443 两条出站，目标都是本环境 `vpc_cidr` |
 | 数据库凭据 | Secrets Manager 托管主用户密码（自动轮转），Terraform state 无明文 |
 | 数据库登录面 | 跳板机零入站规则；端口转发全部走 SSM Session Manager |
 | 实例角色最小权限 | 只挂 `AmazonSSMManagedInstanceCore`，无其他权限 |

@@ -83,11 +83,14 @@
 | 端点 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | S3 | Gateway | 启用 | 挂在公网表 + 3 张私网表；免费 |
-| 其他 | Interface | 关闭 | 由 `interface_endpoint_services` 控制 |
+| 其他 | Interface | 按需 | 由 `interface_endpoint_services` 控制；目前只有 dev 的 `secretsmanager` |
 
-三个环境的 `interface_endpoint_services` 都保持为空：跳板机放在公有子网，
+ssm / ec2messages / ssmmessages 三个环境都不开：跳板机放在公有子网，
 SSM Agent 的 443 出站经 IGW 直连 SSM 公网端点，不需要 Interface 端点。
-需要私网访问 SSM/ECR 时再按需打开。
+
+目前唯一开启的是 dev 的 `secretsmanager`——私网 Lambda 没有公网出口，
+读 RDS 主用户密码必须走接口端点。staging/prod 尚未打开：接口型端点按
+AZ-hour 计费，等 Lambda 真正上量时再按同样方式打开。
 
 S3 网关端点策略只授予数据面动作（`Get/Put/List/Delete`），资源范围是全分区 S3。
 这不是授权边界——真正的鉴权由 IAM identity policy 和桶策略决定；端点策略若按单桶收窄，
@@ -104,9 +107,15 @@ Interface 端点共用一张安全组：入站只允许 VPC 的 IPv4/IPv6 网段
      或 `::/0`，`terraform plan` 直接失败并给出明确错误
    - 模块自身写的规则：接口端点 SG 只允许 `var.vpc_cidr` 和 VPC 的 IPv6 段
 3. 所有规则必须带 `description`（Checkov CKV_AWS_23）。
-4. 出站默认收窄到 VPC 网段。唯一的例外是跳板机安全组的 443 出站
-   （公网子网、无 NAT，SSM 和 `dnf` 必须走 IGW），见第 8 节。
-5. `map_public_ip_on_launch = false`；只有跳板机在启动模板里显式启用公网 IPv4
+4. **Lambda 安全组**（`aws_security_group.additional["lambda"]`）是纯客户端：
+   零入站规则，只有两条出站——TCP/3306 与 TCP/443，目标都是本环境的
+   `vpc_cidr`（分别用于连 MySQL 和 Secrets Manager 的 Interface 端点）。
+   它由各环境 `main.tf` 用 `merge(var.additional_security_groups, ...)` 注入，
+   `cidr_blocks` 直接取 `var.vpc_cidr`，改 CIDR 时规则自动跟随。
+5. 出站默认收窄到 VPC 网段。例外有两处：跳板机安全组的 443 出站
+   （公网子网、无 NAT，SSM 和 `dnf` 必须走 IGW），见第 8 节；
+   以及上面这张 Lambda 安全组——它同样只在 VPC 网段内出站。
+6. `map_public_ip_on_launch = false`；只有跳板机在启动模板里显式启用公网 IPv4
    （公有子网，经 IGW 访问 SSM 公网端点），不绑 EIP。
 
 ## 6. 日志与审计
@@ -138,7 +147,8 @@ environments/<env>
   两个参数必须分开：`count` 只能依赖 plan 期已知值，而桶 ARN 要等到 apply 后才确定。
 - 环境层用 `depends_on = [module.logging]` 保证桶策略和 KMS 授权先于 flow log 创建，
   否则 AWS 会在校验 flow log 目标时拒绝。
-- `rds` 接收 `bastion` 的安全组 ID 作为唯一入站来源；`bastion` 不反向依赖 `rds`。
+- `rds` 接收 `[bastion, lambda]` 两张安全组 ID 作为入站来源；`bastion` 与
+  Lambda 都不反向依赖 `rds`。
 - 跳板机不再挂 Secrets Manager 读取权限：实例角色只有 SSM 托管策略。
 
 ## 8. 数据库与跳板机
@@ -154,7 +164,7 @@ environments/<env>
 | 公网访问 | `publicly_accessible = false` | 私网路由表本来也没有 IPv4 出网 |
 | 密码 | `manage_master_user_password = true` | RDS 在 Secrets Manager 生成并轮转，state 无明文 |
 | 加密 | `storage_encrypted = true` | 默认 `aws/rds` 托管密钥；可传 `kms_key_arn` 用 CMK |
-| 入站 | 仅跳板机安全组 → TCP/3306 | 没有其他来源，也没有出站规则 |
+| 入站 | 跳板机 + Lambda 两张安全组 → TCP/3306 | 没有其他来源，也没有出站规则 |
 | 跳板机 | ASG + Launch Template，`t4g.micro`，AL2023 arm64 | 公有子网，自动分配公网 IPv4 |
 | 跳板机容量 | min 0 / max 1 / desired 0 | 空闲时零计算、零 EBS 费用 |
 | 跳板机入站 | 无任何规则 | 无 SSH、无密钥对、无 22 端口 |
