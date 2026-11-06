@@ -29,6 +29,9 @@ flow_logs_retention_in_days = 365
 log_retention_days          = 365
 enable_s3_flow_logs         = true
 
+# 前端是 SPA：S3 的 403/404 回退到 index.html（HTTP 200），深链接交给前端路由。
+site_spa_mode = true
+
 # --- RDS (MySQL) + 跳板机 ----------------------------------------------------
 # Amazon Linux 2023 arm64 的 AMI。查询方式（区域与服务端保持一致）：
 #   aws ssm get-parameter --region ap-northeast-1 \

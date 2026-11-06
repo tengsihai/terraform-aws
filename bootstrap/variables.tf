@@ -14,6 +14,17 @@ variable "github_repo" {
   nullable    = false
 }
 
+variable "additional_github_repos" {
+  description = "Additional GitHub repositories (owner/repo) allowed to assume the plan and apply roles, e.g. deployment pipelines that live in another repository."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for repo in var.additional_github_repos : can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", repo))])
+    error_message = "additional_github_repos entries must look like owner/repo."
+  }
+}
+
 ###############################################################################
 # GitHub OIDC 身份提供方
 ###############################################################################
@@ -55,6 +66,17 @@ variable "state_key_prefix" {
   description = "Key prefix under which environment states live."
   type        = string
   default     = "network"
+}
+
+variable "pipeline_bucket_arns" {
+  description = "Pre-existing S3 bucket ARNs (bucket only, no /* suffix) that deployment pipelines may list, e.g. a static site bucket populated by aws s3 sync. Object-level actions are covered elsewhere."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for arn in var.pipeline_bucket_arns : can(regex("^arn:[a-z0-9-]+:s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", arn))])
+    error_message = "pipeline_bucket_arns entries must be bucket ARNs without a trailing /*."
+  }
 }
 
 ###############################################################################

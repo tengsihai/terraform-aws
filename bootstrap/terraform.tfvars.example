@@ -3,6 +3,16 @@
 github_owner = "tengsihai"
 github_repo  = "terraform-aws"
 
+# Other repositories allowed to assume the plan/apply roles. The react-aws
+# pipeline deploys the static frontend into the site bucket this stack creates.
+additional_github_repos = ["tengsihai/react-aws"]
+
+# Buckets the pipeline may list (aws s3api head-bucket / aws s3 sync).
+# Object-level Get/Put/Delete are already granted by ManageLogBuckets.
+pipeline_bucket_arns = [
+  "arn:aws:s3:::platform-dev-site-790354569983-ap-northeast-1",
+]
+
 state_bucket_name = "platform-terraform-state-790354569983-ap-northeast-1"
 # state_kms_key_arn = "arn:aws:kms:ap-northeast-1:790354569983:key/REPLACE-ME"
 
