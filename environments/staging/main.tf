@@ -51,7 +51,32 @@ module "vpc" {
   private_subnet_ipv6_netnums = var.private_subnet_ipv6_netnums
   map_public_ip_on_launch     = var.map_public_ip_on_launch
   interface_endpoint_services = var.interface_endpoint_services
-  additional_security_groups  = var.additional_security_groups
+
+  # Lambda 是纯客户端：没有任何入站规则。两条出站分别用于连 MySQL 和
+  # Secrets Manager 的 Interface 端点，目标都限定在本环境的 VPC 网段内。
+  # 用 merge 而不是直接覆盖，保留 tfvars 里按需追加的其他安全组。
+  additional_security_groups = merge(var.additional_security_groups, {
+    lambda = {
+      description = "Egress-only group for the Lambda workload: MySQL and Secrets Manager. No ingress."
+      ingress     = []
+      egress = [
+        {
+          description = "MySQL to the RDS instance inside this VPC."
+          from_port   = 3306
+          to_port     = 3306
+          protocol    = "tcp"
+          cidr_blocks = [var.vpc_cidr]
+        },
+        {
+          description = "HTTPS to the Secrets Manager interface endpoint inside this VPC."
+          from_port   = 443
+          to_port     = 443
+          protocol    = "tcp"
+          cidr_blocks = [var.vpc_cidr]
+        },
+      ]
+    }
+  })
 
   flow_logs_enabled           = true
   flow_logs_traffic_type      = "ALL"
@@ -101,8 +126,12 @@ module "rds" {
   db_name         = var.db_name
   master_username = var.db_master_username
 
-  # 入站只允许跳板机那一张安全组；单 AZ、公网不可达由模块内部固定。
-  allowed_security_group_ids = [module.bastion.security_group_id]
+  # 入站只允许显式列出的两张安全组：跳板机（人工运维）和 Lambda（应用）。
+  # 单 AZ、公网不可达由模块内部固定。
+  allowed_security_group_ids = [
+    module.bastion.security_group_id,
+    module.vpc.additional_security_group_ids["lambda"],
+  ]
 
   deletion_protection = var.db_deletion_protection
   skip_final_snapshot = var.db_skip_final_snapshot

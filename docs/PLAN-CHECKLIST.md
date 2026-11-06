@@ -9,11 +9,14 @@
 
 | 环境 | `Plan:` 行 | 说明 |
 | --- | --- | --- |
-| dev | `Plan: 53 to add, 0 to change, 0 to destroy.` | 不含 S3 flow log |
-| staging | `Plan: 54 to add, 0 to change, 0 to destroy.` | 含 `aws_flow_log.s3` |
-| prod | `Plan: 54 to add, 0 to change, 0 to destroy.` | 含 `aws_flow_log.s3` |
+| dev | `Plan: 57 to add, 0 to change, 0 to destroy.` | 不含 S3 flow log；含 Secrets Manager Interface 端点 |
+| staging | `Plan: 56 to add, 0 to change, 0 to destroy.` | 含 `aws_flow_log.s3` |
+| prod | `Plan: 56 to add, 0 to change, 0 to destroy.` | 含 `aws_flow_log.s3` |
 
-其中新增的 11 个资源来自 `bastion`（7）和 `rds`（4）。不创建 SSM Interface 端点。
+其中新增的 12 个资源来自 `bastion`（7）和 `rds`（5）。不创建 ssm / ec2messages /
+ssmmessages Interface 端点。
+`vpc` 模块额外创建：Lambda 安全组（`aws_security_group.additional["lambda"]`，
+无入站、两条出站）；dev 还多两个——Interface 端点安全组与 `secretsmanager` 端点。
 
 首次部署（state 为空）三个环境都必须是 **0 to change / 0 to destroy**。
 出现任何 `destroy` 或 `must be replaced`，立即停止评审。
@@ -35,7 +38,7 @@
 | `aws_s3_bucket_lifecycle_configuration.logs` | 有 `expiration`、`noncurrent_version_expiration`、`abort_incomplete_multipart_upload` |
 | `aws_s3_bucket_policy.logs` | 含 `DenyInsecureTransport` |
 
-### vpc 模块（32 个）
+### vpc 模块（dev 35 个；staging/prod 34 个）
 
 | 资源 | 数量 | 核对点 |
 | --- | --- | --- |
@@ -52,6 +55,9 @@
 | `aws_route_table_association.public` | 3 | |
 | `aws_route_table_association.private` | 3 | |
 | `aws_default_security_group.this` | 1 | **无任何 ingress/egress** |
+| `aws_security_group.additional["lambda"]` | 1 | **无任何 ingress**；只有 3306 / 443 两条出站，目标都是本环境 `vpc_cidr` |
+| `aws_security_group.interface_endpoints[0]` | 仅 dev 1 | 入站只允许本环境 `vpc_cidr` 的 443 |
+| `aws_vpc_endpoint.interface["secretsmanager"]` | 仅 dev 1 | Interface 型，挂三张私网子网 |
 | `aws_vpc_endpoint.s3[0]` | 1 | Gateway，挂 4 张路由表 |
 | `aws_kms_key.flow_logs[0]` | 1 | `enable_key_rotation = true` |
 | `aws_kms_alias.flow_logs[0]` | 1 | |
@@ -80,13 +86,14 @@ plan 中**不应出现** `aws_instance`、`aws_eip`、`aws_key_pair`、`key_name
 或任何 `aws_vpc_security_group_ingress_rule`。（ASG 的实例是运行时创建的，
 不属于 Terraform 资源。）
 
-### rds 模块（4 个）
+### rds 模块（5 个）
 
 | 资源 | 核对点 |
 | --- | --- |
 | `aws_db_subnet_group.this` | 三张私网子网 |
 | `aws_security_group.this` | 无 ingress / egress 规则 |
 | `aws_vpc_security_group_ingress_rule.mysql[0]` | `referenced_security_group_id` = 跳板机安全组，端口 3306；不得出现 `cidr_ipv4` |
+| `aws_vpc_security_group_ingress_rule.mysql[1]` | `referenced_security_group_id` = Lambda 安全组，端口 3306；不得出现 `cidr_ipv4` |
 | `aws_db_instance.this` | `engine = "mysql"`、`instance_class = "db.t4g.micro"`、`multi_az = false`、`publicly_accessible = false`、`storage_encrypted = true`、`manage_master_user_password = true` |
 
 ## 3. 必须为空的检查
@@ -152,8 +159,8 @@ grep -A10 'aws_default_security_group\.this' "$PLAN"
 grep -E '^Plan: ' "$PLAN"
 ```
 
-`grep -cE '^  # '` 得到的是「资源 + data 源 + output」的总行数（dev 为 65，
-staging/prod 为 66），不是资源数。资源数一律以 `Plan:` 行为准。
+`grep -cE '^  # '` 得到的是「资源 + data 源 + output」的总行数（dev 为 69，
+staging/prod 为 68），不是资源数。资源数一律以 `Plan:` 行为准。
 
 ## 5. 危险信号（出现即停止）
 
@@ -169,7 +176,7 @@ staging/prod 为 66），不是资源数。资源数一律以 `Plan:` 行为准�
 | `aws_db_instance` 出现 `password` 或 `master_user_secret` 以外的凭据字段 | 密码不应经过 Terraform |
 | `aws_instance`、`aws_key_pair`、`key_name`、`aws_eip` | 跳板机是纯 ASG + SSM，禁止单实例、密钥对、EIP |
 | `aws_autoscaling_group` 的 `min_size` / `desired_capacity` 不为 0 | 空闲时会产生计算费用 |
-| 资源数显著偏离 53/54 | 代码或变量被意外修改 |
+| 资源数显著偏离 56/57 | 代码或变量被意外修改 |
 | `aws_account_id` 仍为 `123456789012`（在线 mode） | 占位符，策略会指向错误账户 |
 
 ## 6. 负向验证（一次性检查，确认护栏真的生效）
@@ -201,7 +208,7 @@ apply 前由评审人逐条确认：
 - [ ] `./scripts/check-quotas.sh`（或 `make quotas`）显示 VPC / IGW / EIP / RDS 配额充足
 - [ ] `make check-tags` 三个环境全部 PASS
 - [ ] `make test` 的模块测试全部通过
-- [ ] `Plan:` 行与预期一致（53 / 54，0 change，0 destroy）
+- [ ] `Plan:` 行与预期一致（57 / 56，0 change，0 destroy）
 - [ ] 第 3 节的三条 grep 结果符合预期
 - [ ] 第 5 节危险信号一条都没有出现
 - [ ] `aws_account_id` 已替换为真实账户

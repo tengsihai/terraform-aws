@@ -46,12 +46,12 @@
 
 - **场景**：变更绕过人工把关直接落到真实账户。
 - **影响**：生产网络被创建/修改/删除。VPC 删除会连带删除其下所有资源。
-- **人工把关点**：**合并 PR**。main 上的 ruleset `protect-main` 禁止直接 push，
+- **人工把关点**：**合并 PR**。环境分支上的 ruleset 禁止直接 push，
   要求全部 status checks 全绿；合并这个动作就是审批。
 - **缓解**：
   - 本地：`scripts/lib.sh` 的 `refuse_mutation()` 硬拒绝，`Makefile` 的 `apply`/`destroy`
     目标只打印说明并 `exit 1`；
-  - CI：唯一的执行入口 `apply.yml` 由「main 上的 plan 完成」自动触发，且只接受
+  - CI：唯一的执行入口 `apply.yml` 由「环境分支上的 plan 完成」自动触发，且只接受
     `push` 事件（一次合并）产生的 plan；执行对象是不可变的 plan 工件，不重新 plan；
   - `apply.yml` 在 apply 前校验 plan run 来源、分支、提交、SHA-256、时效与账户 ID；
   - 并发组 `cancel-in-progress: false`，不会把执行中的 apply 取消掉；
@@ -227,7 +227,7 @@ rm -f /tmp/state-bucket-policy.json
 
 ### R-05 未启用 Interface 端点导致 SSM/ECR 不可用
 
-- **场景**：`interface_endpoint_services` 默认为空。
+- **场景**：`interface_endpoint_services` 默认为空（目前只有 dev 开了 `secretsmanager`，ssm/ecr 仍未开）。
 - **影响**：私网实例无法用 Session Manager 登录，无法从 ECR 拉镜像——大多数容器化工作负载会直接起不来。
 - **缓解**：按需打开 `["ssm","ssmmessages","ec2messages","ecr.api","ecr.dkr","logs"]`；
   成本 = 端点数量 × AZ 数 × 小时单价 + 数据处理费。上线前需成本确认。
@@ -421,8 +421,8 @@ rm -f /tmp/state-bucket-policy.json
 - **场景**：`apply.yml` 应用的是从 GitHub Actions 工件库下载的 plan 文件。
 - **影响**：对仓库有 write 权限的人理论上可以构造一个 run 并伪造工件。
 - **缓解**：
-  - 校验 run 必须由 `plan.yml` 产生、在 `main` 上、`conclusion=success`；
-  - 校验 `head_sha` 仍等于 `main` 的 HEAD；
+  - 校验 run 必须由 `plan.yml` 产生、在环境分支上、`conclusion=success`；
+  - 校验 `head_sha` 仍等于该环境分支的 HEAD；
   - 校验 manifest 中的环境、提交与 plan 文件 SHA-256；
   - 限制 `PLAN_MAX_AGE_HOURS`（默认 24h）；
   - 最关键的补偿控制是**审批人必须阅读摘要**，不能只看「检查通过」。
