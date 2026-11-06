@@ -16,17 +16,17 @@
 | R-07 | dev/staging 日志保留不足 1 年 | 中 | 已接受 |
 | R-08 | 远端 state 桶需手工创建与加固 | 高 | 已缓解（dev） |
 | R-09 | KMS 密钥策略授予账户 root 全权 | 中 | 已接受 |
-| R-10 | 无网络 ACL、无集中式流量检查 | 中 | 待处理 |
+| R-10 | 无网络 ACL、无集中式流量检查 | 中 | 已接受（当前需求） |
 | R-11 | 私网 IPv6 默认不分配地址 | 低 | 已接受 |
 | R-12 | 桶名依赖占位账户 ID，可能与现有桶冲突 | 中 | 已缓解 |
-| R-13 | 无跨账户 / Transit Gateway 连接能力 | 中 | 待处理 |
+| R-13 | 无跨账户 / Transit Gateway 连接能力 | 中 | 已接受（无跨账户需求） |
 | R-14 | Checkov severity 元数据离线缺失 | 中 | 已缓解 |
-| R-15 | 无集成测试（Terratest 等） | 中 | 待处理 |
+| R-15 | 无集成测试（Terratest 等） | 中 | 已缓解（plan 级） |
 | R-16 | flow logs 60 秒聚合增加成本 | 低 | 已接受 |
-| R-17 | 无 drift detection | 中 | 待处理 |
-| R-18 | 未做 VPC / EIP 配额预检 | 低 | 待处理 |
+| R-17 | 无 drift detection | 中 | 已缓解 |
+| R-18 | 未做 VPC / EIP 配额预检 | 低 | 已缓解 |
 | R-19 | provider 版本为区间约束，依赖 lock 文件 | 低 | 已缓解 |
-| R-20 | 未强制资源标签合规 | 低 | 待处理 |
+| R-20 | 未强制资源标签合规 | 低 | 已缓解 |
 | R-21 | CI apply 角色权限偏宽 | 高 | 已缓解（权限边界） |
 | R-22 | plan 工件的可信度依赖 GitHub | 中 | 已缓解 |
 | R-23 | 第三方 Action 供应链风险 | 中 | 已缓解 |
@@ -34,7 +34,7 @@
 | R-25 | drift 检测只覆盖 Terraform 管理的资源 | 低 | 已接受 |
 | R-26 | 合并即部署，缺少独立审批 | 中 | 已接受 |
 | R-27 | 跳板机由 ASG 按需拉起 | 中 | 已缓解 |
-| R-28 | 开发人员 IAM 策略需要单独分发 | 中 | 待处理 |
+| R-28 | 开发人员 IAM 策略需要单独分发 | 中 | 已接受（策略已输出） |
 | R-29 | RDS 单 AZ，无跨 AZ 故障切换 | 中 | 已接受 |
 | R-30 | 跳板机出站全部允许 | 低 | 已接受 |
 
@@ -102,7 +102,7 @@
 - **缓解**：
   - `plan.sh` 在线模式会比对 `aws sts get-caller-identity` 与实际账户，不一致直接中止；
   - staging/prod 接入 CI 前，把 `env.tfvars` 里的值替换成目标账户 ID，并重新生成 plan。
-- **状态**：dev 已解决；staging/prod 待处理（接入时替换）。
+- **状态**：dev 已解决；staging/prod 接入时替换（不阻塞当前环境）。
 
 ### R-08 远端 state 桶需手工创建与加固
 
@@ -261,9 +261,10 @@ rm -f /tmp/state-bucket-policy.json
 
 - **场景**：只使用安全组（有状态），未配置自定义 NACL，也没有 Network Firewall / TGW 检查点。
 - **影响**：东西向流量（子网之间、AZ 之间）没有额外拦截层，出网流量也没有域名级过滤。
-- **缓解**：私网本就无 IPv4 出网，公网子网应只放 ALB/NAT（本设计无 NAT）。
-  需要深度检查时，应通过 Network Firewall 或集中式检查 VPC 实现。
-- **状态**：待处理（取决于合规要求）。
+- **现有控制**：安全组零公网入站、私网无 IPv4 出网、VPC flow logs 记录全部流量。
+- **决策**：集中式流量检查需要 Network Firewall 或 TGW 检查 VPC，属于跨账户/合规级项目，
+  会引入固定成本和运维面；当前需求不包含，作为已知缺口接受。合规要求出现时单独立项。
+- **状态**：已接受（当前需求）。
 
 ### R-12 桶名依赖占位账户 ID
 
@@ -277,7 +278,9 @@ rm -f /tmp/state-bucket-policy.json
 
 - **场景**：模块不创建 TGW 挂载、VPC peering 或 RAM 共享。
 - **影响**：多账户或混合云场景需要额外的连接层，当前需手工实现。
-- **状态**：待处理。
+- **决策**：当前是单账户、单 VPC 设计，没有跨账户或本地数据中心互联需求；
+  需要时通过 TGW 或 peering 单独设计，不影响现有地址规划。
+- **状态**：已接受（无跨账户需求）。
 
 ### R-14 Checkov severity 元数据离线缺失
 
@@ -290,19 +293,28 @@ rm -f /tmp/state-bucket-policy.json
 
 ### R-15 无集成测试
 
-- **场景**：只有 `validate` 和 `plan`，没有 Terratest 或 `terraform test` 的
-  真实创建/销毁验证。
-- **影响**：路由、端点、IPv6 这类只能在真实环境验证的行为，缺陷要到 apply 后才暴露。
-- **缓解**：建议在独立沙箱账户补 `terraform test`（`*.tftest.hcl`）验证 plan 断言。
-- **状态**：待处理。
+- **场景**：真实创建/销毁（Terratest）仍未覆盖；但配置层面的 plan 断言已经补齐。
+- **已实施**：
+  - `modules/bastion/tests/bastion.tftest.hcl`：ASG 0/1/0、实例类型、无密钥对、
+    根卷加密 + DeleteOnTermination、IMDSv2、公网 IPv4、开发人员策略的标签/MFA/文档限制；
+  - `modules/rds-mysql/tests/rds_mysql.tftest.hcl`：MySQL、单 AZ、不对公网、
+    存储加密、Secrets Manager 托管密码、仅安全组来源的 3306 入站；
+  - 使用 `mock_provider`，不访问 AWS；`make test` 本地运行，
+    `pr-checks.yml` 的 `module-tests` job 在 CI 运行。
+- **剩余风险**：mock 测试验证的是配置图，不是真实 AWS 行为（路由、端点、IPv6 仍需实机验证）。
+  真实创建/销毁测试应在独立沙箱账户用 Terratest 或 `terraform test` + 真实 provider 完成。
+- **状态**：已缓解（plan 级集成测试已落地）；真实 apply/destroy 测试待沙箱账户。
 
 ### R-17 无 drift detection
 
 - **场景**：控制台手工改动不会被自动发现。
 - **影响**：下一个人 apply 时可能产生意外 diff 甚至替换。
-- **缓解**：建议对 prod 每日跑一次带凭据的 `terraform plan -detailed-exitcode`，
-  以只读方式把 drift 报警出来（不 apply）。
-- **状态**：待处理。
+- **已实施**：`.github/workflows/drift-detection.yml` 在工作日 01:00 UTC 运行，
+  用只读的 `terraform-plan` 角色执行 `terraform plan -detailed-exitcode`，
+  发现漂移时自动开/更新带 `drift` 标签的 GitHub issue，并上传 plan 报告；
+  流程只读，不会 apply。
+- **剩余风险**：只覆盖 Terraform 管理的资源（见 R-25）。
+- **状态**：已缓解。
 
 ### R-27 跳板机由 ASG 按需拉起（公有子网）
 
@@ -326,11 +338,33 @@ rm -f /tmp/state-bucket-policy.json
 - **场景**：模块只**输出**最小权限策略，不创建 IAM 用户、组或角色。
 - **影响**：如果开发人员继续使用更宽的现成权限（例如 `ssm:*` 或 `AdministratorAccess`），
   上面所有标签和文档限制都不会生效。
-- **缓解**：
-  - 把 `terraform output bastion_developer_policy_json` 挂到专用的开发人员组；
-  - 用 IAM Access Analyzer / 权限边界确认没有更宽的 `ssm:StartSession` 授权；
-  - 定期复核 `describe-instance-information` 与 CloudTrail 的会话记录。
-- **状态**：待处理（依赖组织侧的 IAM 分发流程）。
+- **分发步骤**（策略已由 `terraform output bastion_developer_policy_json` 提供）：
+
+  ```bash
+  # 1. 导出策略 JSON
+  terraform -chdir=environments/dev output -raw bastion_developer_policy_json \
+    > /tmp/bastion-developer-dev.json
+
+  # 2. 建成客户托管策略（每个环境一份，标签值不同）
+  POLICY_ARN=$(aws iam create-policy \
+    --policy-name bastion-developer-dev \
+    --policy-document file:///tmp/bastion-developer-dev.json \
+    --query Policy.Arn --output text)
+
+  # 3a. 挂到 IAM 用户
+  aws iam attach-user-policy --user-name <developer> --policy-arn "$POLICY_ARN"
+
+  # 3b. 或挂到 IAM 组
+  aws iam attach-group-policy --group-name db-developers --policy-arn "$POLICY_ARN"
+  ```
+
+  使用 IAM Identity Center 时，把同一份 JSON 作为 permission set 的内联策略，
+  不要另外授予 `ssm:*`。
+- **复核**：用 IAM Access Analyzer 确认没有更宽的 `ssm:StartSession` 授权；
+  定期检查 CloudTrail 的 StartSession 记录。
+- **决策**：挂载到用户/组/SSO 属于组织 IAM 流程，不在 Terraform 里创建 IAM 用户或组；
+  策略内容本身已经落地并可直接使用。
+- **状态**：已接受（策略已输出，分发步骤已明确，挂载由组织执行）。
 
 ### R-29 RDS 单 AZ，无跨 AZ 故障切换
 
@@ -349,9 +383,9 @@ rm -f /tmp/state-bucket-policy.json
 | --- | --- | --- |
 | R-11 | 私网 IPv6 默认不分配地址 | 子网有 /64 但不自动分配，需按 ENI 显式开启；避免隐式暴露 |
 | R-16 | flow logs 60 秒聚合成本 | 600 秒更便宜但排查变慢；仅在成本敏感时下调 |
-| R-18 | 未做配额预检 | 每账户每区域 VPC/EIP/端点配额可能不足，需在 apply 前确认 |
+| R-18 | 未做配额预检 | 已提供 `make quotas`（`scripts/check-quotas.sh`，只读）：对比 VPC / IGW / EIP / RDS 配额与已用量 + 计划量，apply 前人工运行 |
 | R-19 | provider 版本为区间约束 | `>= 6.0.0, < 7.0.0`，实际版本由 `.terraform.lock.hcl` 锁定；lock 文件必须入库 |
-| R-20 | 未强制标签合规 | 通过 provider `default_tags` 注入基础标签，但未用 SCP/Config 强制 |
+| R-20 | 未强制标签合规 | 已提供 `make check-tags`（`scripts/check-tags.py`）并接入 CI：基于离线 plan JSON，要求每个可打标签资源带 `Project` / `Environment` / `ManagedBy` / `Repository`；SCP/Config 级别的强制仍在组织层 |
 | R-30 | 跳板机出站全部允许 | 需求要求；实例无入站规则，唯一访问路径是 SSM |
 
 ---
@@ -380,7 +414,7 @@ rm -f /tmp/state-bucket-policy.json
   3. 长期方案是把 CI 放在专用的工作负载账户，通过跨账户角色访问目标账户。
 - **检测**：`CKV_AWS_108/109/111/356/2_AWS_40` 对相关策略已内联豁免并写明理由；
   豁免一旦扩散到其他资源，Code Review 必须拒绝。
-- **状态**：已缓解（权限边界已落地）；SCP 与独立账户仍待处理。
+- **状态**：已缓解（权限边界已落地）；剩余收紧项（SCP、独立账户）属于组织层决策。
 
 ### R-22 plan 工件的可信度依赖 GitHub
 
@@ -433,4 +467,5 @@ rm -f /tmp/state-bucket-policy.json
 4. R-21：apply 角色已挂权限边界，确认边界 ARN 与预期一致；SCP 是否到位另行评估。
 5. R-27/R-28：跳板机的 SSM 访问权限、开发人员策略分发和 MFA 要求已确认。
 6. R-29：已确认业务接受 RDS 单 AZ。
-7. `docs/PLAN-CHECKLIST.md` 的全部校验点通过。
+7. `make quotas`（R-18）显示配额充足；`make check-tags` 与 `make test` 全部通过。
+8. `docs/PLAN-CHECKLIST.md` 的全部校验点通过。
