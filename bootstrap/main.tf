@@ -353,6 +353,16 @@ data "aws_iam_policy_document" "apply_mutations" {
     resources = ["arn:${local.partition}:iam::${local.account_id}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"]
   }
 
+  # 第一次创建 RDS 实例时，RDS 会以调用者身份创建 AWSServiceRoleForRDS。
+  # 少了这条，CreateDBInstance 会报 "Verify that you have permission to
+  # create service linked role"。
+  statement {
+    sid       = "CreateRdsServiceLinkedRole"
+    effect    = "Allow"
+    actions   = ["iam:CreateServiceLinkedRole"]
+    resources = ["arn:${local.partition}:iam::${local.account_id}:role/aws-service-role/rds.amazonaws.com/AWSServiceRoleForRDS"]
+  }
+
   # manage_master_user_password = true：RDS 以调用者身份在 Secrets Manager 里
   # 创建并轮转主用户密钥，所以 apply 角色需要这些动作（内容不会被 Terraform 读取）。
   statement {
@@ -580,13 +590,16 @@ data "aws_iam_policy_document" "apply_boundary" {
   }
 
   statement {
-    sid       = "DenyOutsideDeployRegion"
-    effect    = "Deny"
-    actions   = ["*"]
-    resources = ["*"]
+    sid         = "DenyOutsideDeployRegion"
+    effect      = "Deny"
+    not_actions = ["iam:*", "sts:*"]
+    resources   = ["*"]
 
+    # 用 StringNotEquals 而不是 StringNotEqualsIfExists：IfExists 语句在请求里
+    # **没有** aws:RequestedRegion 时也会命中，等于把所有全球型调用全部拒绝。
+    # 全球型服务（IAM、STS）不携带这个键，这里用 NotAction 直接豁免。
     condition {
-      test     = "StringNotEqualsIfExists"
+      test     = "StringNotEquals"
       variable = "aws:RequestedRegion"
       values   = [var.aws_region]
     }
