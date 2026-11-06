@@ -143,3 +143,79 @@ variable "enable_s3_flow_logs" {
   type        = bool
   default     = false
 }
+
+variable "bastion_ami_id" {
+  description = "Amazon Linux 2023 (arm64) AMI ID for the bastion. Refresh it from the public SSM parameter before rebuilding the instance."
+  type        = string
+
+  validation {
+    condition     = can(regex("^ami-[0-9a-f]{8,17}$", var.bastion_ami_id))
+    error_message = "bastion_ami_id must look like ami-0123456789abcdef0."
+  }
+}
+
+variable "bastion_instance_type" {
+  description = "Bastion launch template instance type. Must match the arm64 AMI."
+  type        = string
+  default     = "t4g.micro"
+}
+
+variable "bastion_min_size" {
+  description = "Bastion ASG minimum size. 0 means no instance and no compute/EBS cost by default."
+  type        = number
+  default     = 0
+}
+
+variable "bastion_max_size" {
+  description = "Bastion ASG maximum size. The design caps the bastion at one instance."
+  type        = number
+  default     = 1
+}
+
+variable "bastion_desired_capacity" {
+  description = "Bastion ASG desired capacity. Scale to 1 manually while a database session is needed."
+  type        = number
+  default     = 0
+}
+
+variable "db_local_port" {
+  description = "Local port used by the SSM port-forwarding example and by DBeaver/Navicat."
+  type        = number
+  default     = 13306
+}
+
+variable "db_engine_version" {
+  description = "MySQL engine version for RDS. A major.minor value such as \"8.4\" lets RDS pick the latest minor release."
+  type        = string
+  default     = "8.4"
+}
+
+variable "db_instance_class" {
+  description = "RDS instance class."
+  type        = string
+  default     = "db.t4g.micro"
+}
+
+variable "db_name" {
+  description = "Initial database created inside the RDS instance."
+  type        = string
+  default     = "appdb"
+}
+
+variable "db_master_username" {
+  description = "RDS master user name. The password is generated and rotated by RDS in AWS Secrets Manager."
+  type        = string
+  default     = "admin"
+}
+
+variable "db_deletion_protection" {
+  description = "Block deletion of the RDS instance."
+  type        = bool
+  default     = false
+}
+
+variable "db_skip_final_snapshot" {
+  description = "Skip the final RDS snapshot on deletion."
+  type        = bool
+  default     = true
+}

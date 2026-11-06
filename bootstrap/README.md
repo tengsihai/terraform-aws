@@ -19,7 +19,8 @@ fork 出来的 PR 拿不到 OIDC token，所以外部贡献者无法借此访问
 | --- | --- | --- |
 | `aws_iam_openid_connect_provider.github` | — | 仅作为信任锚点 |
 | `aws_iam_role.plan` | `repo:<owner>/<repo>:environment:terraform-plan`（见下方 sub 格式说明） | 只读 + state 读写 |
-| `aws_iam_role.apply["dev"]` | `repo:<owner>/<repo>:environment:dev` | 网络/存储/KMS/日志/IAM 变更 |
+| `aws_iam_policy.apply_boundary` | — | 权限边界：允许的服务 + 禁止 IAM 用户凭据 + 限定区域 |
+| `aws_iam_role.apply["dev"]` | `repo:<owner>/<repo>:environment:dev` | 网络/存储/KMS/日志/EC2/ASG/RDS/Secrets Manager/IAM 变更，挂权限边界 |
 | `aws_iam_role.apply["staging"]` | `repo:<owner>/<repo>:environment:staging` | 同上（`environments` 含 staging 时才创建） |
 | `aws_iam_role.apply["prod"]` | `repo:<owner>/<repo>:environment:prod` | 同上（`environments` 含 prod 时才创建） |
 
@@ -77,12 +78,19 @@ terraform apply bootstrap.tfplan
 apply 角色目前能管理本仓库涉及的资源类型，资源范围是账户级。这在 Terraform 里是
 常见取舍：`Create*` 动作作用的对象在执行前还不存在，无法预先写成 ARN 白名单。
 
-收紧路径（按优先级）：
+已落地的第一层控制是 **权限边界**（`aws_iam_policy.apply_boundary`，输出
+`apply_permissions_boundary_arn`）：
 
-1. 用 **permission boundary** 给角色加一条硬上限；
-2. 用 **SCP** 限制可操作的区域和服务；
-3. 用 IAM Access Analyzer 基于 CloudTrail 生成更精确的策略；
-4. 把 apply 角色限制到专用的工作负载账户。
+- 只允许 `ec2` / `s3` / `kms` / `logs` / `rds` / `autoscaling` / `secretsmanager`
+  / `sts` 和显式列出的 IAM 动作，没有 `iam:*`；
+- 拒绝创建 IAM 用户、访问密钥、登录配置，以及给用户挂策略；
+- 区域型 API 通过 `aws:RequestedRegion` 限定在 `aws_region`（默认 ap-northeast-1）。
+
+剩余风险与收紧路径（按优先级）：
+
+1. 用 **SCP** 在账户/OU 层限制可操作服务、区域和资源标签；
+2. 用 IAM Access Analyzer 基于 CloudTrail 生成更精确的策略；
+3. 把 CI 放在专用的工作负载账户，通过跨账户角色访问目标账户。
 
 对应风险见 [docs/RISKS.md](../docs/RISKS.md) R-21。
 

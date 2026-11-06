@@ -173,15 +173,45 @@ data "aws_iam_policy_document" "plan_read" {
   }
 
   statement {
-    sid    = "ReadIamForFlowLogsRole"
+    sid    = "ReadIamForWorkloadRoles"
     effect = "Allow"
     actions = [
+      "iam:GetInstanceProfile",
+      "iam:GetPolicy",
+      "iam:GetPolicyVersion",
       "iam:GetRole",
       "iam:GetRolePolicy",
       "iam:ListAttachedRolePolicies",
+      "iam:ListInstanceProfileTags",
+      "iam:ListInstanceProfiles",
       "iam:ListInstanceProfilesForRole",
       "iam:ListRolePolicies",
       "iam:ListRoleTags",
+    ]
+    resources = ["*"]
+  }
+
+  # RDS 与 RDS 托管的主用户密钥都只做只读查询：
+  # 密钥内容永远不会被 Terraform 读取，这里也没有 GetSecretValue。
+  statement {
+    sid    = "ReadDatabase"
+    effect = "Allow"
+    actions = [
+      "rds:DescribeDBInstances",
+      "rds:DescribeDBSnapshots",
+      "rds:DescribeDBSubnetGroups",
+      "rds:ListTagsForResource",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ReadDatabaseSecretsMetadata"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:DescribeSecret",
+      "secretsmanager:GetResourcePolicy",
+      "secretsmanager:ListTagsForResource",
     ]
     resources = ["*"]
   }
@@ -190,6 +220,13 @@ data "aws_iam_policy_document" "plan_read" {
     sid       = "ReadCallerIdentity"
     effect    = "Allow"
     actions   = ["sts:GetCallerIdentity"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "ReadAutoScaling"
+    effect    = "Allow"
+    actions   = ["autoscaling:Describe*"]
     resources = ["*"]
   }
 }
@@ -201,7 +238,7 @@ data "aws_iam_policy_document" "plan_read" {
 data "aws_iam_policy_document" "apply_mutations" {
   #checkov:skip=CKV_AWS_356:Terraform creates resources whose ARNs do not exist yet so Create actions cannot be scoped to a resource list. The remaining blast radius is the account, which is why apply runs behind a required-reviewer approval.
   #checkov:skip=CKV_AWS_111:Write actions target resources that Terraform owns but has not created yet. The trusted tightening path is an SCP plus permission boundary, tracked as R-21 in docs/RISKS.md.
-  #checkov:skip=CKV_AWS_109:See CKV_AWS_111. iam:PassRole is already constrained to vpc-flow-logs.amazonaws.com via iam:PassedToService.
+  #checkov:skip=CKV_AWS_109:See CKV_AWS_111. Both iam:PassRole statements are constrained by iam:PassedToService (vpc-flow-logs.amazonaws.com and ec2.amazonaws.com).
   #checkov:skip=CKV_AWS_108:s3:GetObject and s3:PutObject cover the log bucket the same role creates and the state bucket handled by state_access. Account wide scoping is the current trade-off, tracked as R-21.
 
   statement {
@@ -239,6 +276,125 @@ data "aws_iam_policy_document" "apply_mutations" {
       "ec2:ModifyVpcEndpoint",
       "ec2:RevokeSecurityGroupEgress",
       "ec2:RevokeSecurityGroupIngress",
+    ]
+    resources = ["*"]
+  }
+
+  # 跳板机：RunInstances 会连带创建 EBS 卷和 ENI，EIP 需要独立分配/关联。
+  statement {
+    sid    = "ManageBastionInstances"
+    effect = "Allow"
+    actions = [
+      "ec2:AllocateAddress",
+      "ec2:AssociateAddress",
+      "ec2:AssociateIamInstanceProfile",
+      "ec2:AttachVolume",
+      "ec2:CreateVolume",
+      "ec2:DeleteVolume",
+      "ec2:DetachVolume",
+      "ec2:DisassociateAddress",
+      "ec2:DisassociateIamInstanceProfile",
+      "ec2:ModifyInstanceAttribute",
+      "ec2:ModifyInstanceMetadataOptions",
+      "ec2:ModifyVolume",
+      "ec2:ReleaseAddress",
+      "ec2:ReplaceIamInstanceProfileAssociation",
+      "ec2:RunInstances",
+      "ec2:StartInstances",
+      "ec2:StopInstances",
+      "ec2:TerminateInstances",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ManageDatabase"
+    effect = "Allow"
+    actions = [
+      "rds:AddTagsToResource",
+      "rds:CreateDBInstance",
+      "rds:CreateDBSnapshot",
+      "rds:CreateDBSubnetGroup",
+      "rds:DeleteDBInstance",
+      "rds:DeleteDBSubnetGroup",
+      "rds:ModifyDBInstance",
+      "rds:ModifyDBSubnetGroup",
+      "rds:RemoveTagsFromResource",
+      "rds:RestoreDBInstanceFromDBSnapshot",
+    ]
+    resources = ["*"]
+  }
+
+  # 跳板机是 ASG + Launch Template：实例由 ASG 拉起，没有 aws_instance 资源。
+  statement {
+    sid    = "ManageBastionAutoScaling"
+    effect = "Allow"
+    actions = [
+      "autoscaling:CreateAutoScalingGroup",
+      "autoscaling:CreateOrUpdateTags",
+      "autoscaling:DeleteAutoScalingGroup",
+      "autoscaling:DeleteTags",
+      "autoscaling:UpdateAutoScalingGroup",
+      "ec2:CreateLaunchTemplate",
+      "ec2:CreateLaunchTemplateVersion",
+      "ec2:DeleteLaunchTemplate",
+      "ec2:DeleteLaunchTemplateVersions",
+      "ec2:ModifyLaunchTemplate",
+    ]
+    resources = ["*"]
+  }
+
+  # 账户里第一次创建 ASG 时 AWS 会自动创建服务相关角色；
+  # 这里把权限限定到 autoscaling 的服务相关角色 ARN 上。
+  statement {
+    sid       = "CreateAutoScalingServiceLinkedRole"
+    effect    = "Allow"
+    actions   = ["iam:CreateServiceLinkedRole"]
+    resources = ["arn:${local.partition}:iam::${local.account_id}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"]
+  }
+
+  # manage_master_user_password = true：RDS 以调用者身份在 Secrets Manager 里
+  # 创建并轮转主用户密钥，所以 apply 角色需要这些动作（内容不会被 Terraform 读取）。
+  statement {
+    sid    = "ManageDatabaseSecrets"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:CreateSecret",
+      "secretsmanager:DeleteSecret",
+      "secretsmanager:DescribeSecret",
+      "secretsmanager:GetResourcePolicy",
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:ListTagsForResource",
+      "secretsmanager:PutSecretValue",
+      "secretsmanager:RestoreSecret",
+      "secretsmanager:RotateSecret",
+      "secretsmanager:TagResource",
+      "secretsmanager:UntagResource",
+      "secretsmanager:UpdateSecret",
+    ]
+    resources = ["*"]
+  }
+
+  # 跳板机的实例角色、实例配置文件和挂在它上面的内联策略。
+  statement {
+    sid    = "ManageInstanceRoles"
+    effect = "Allow"
+    actions = [
+      "iam:AddRoleToInstanceProfile",
+      "iam:AttachRolePolicy",
+      "iam:CreateInstanceProfile",
+      "iam:DeleteInstanceProfile",
+      "iam:DetachRolePolicy",
+      "iam:GetInstanceProfile",
+      "iam:GetRole",
+      "iam:GetRolePolicy",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListInstanceProfilesForRole",
+      "iam:ListRolePolicies",
+      "iam:RemoveRoleFromInstanceProfile",
+      "iam:TagInstanceProfile",
+      "iam:UntagInstanceProfile",
+      "iam:UpdateAssumeRolePolicy",
     ]
     resources = ["*"]
   }
@@ -329,6 +485,120 @@ data "aws_iam_policy_document" "apply_mutations" {
       values   = ["vpc-flow-logs.amazonaws.com"]
     }
   }
+
+  # EC2 启动跳板机时要代入它的实例角色。
+  statement {
+    sid       = "PassBastionRoleToEc2"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
+###############################################################################
+# Apply 角色的权限边界（R-21）
+#
+# 身份策略（apply_mutations）已经按服务收窄；边界是第二道硬上限：
+#   1. 只允许本仓库实际使用的服务；
+#   2. 禁止创建 IAM 用户 / 访问密钥 / 登录配置 —— 这是最常见的提权路径；
+#   3. 区域型 API 只允许部署区域，全球型 API（IAM、STS）不受影响
+#      （StringNotEqualsIfExists 在请求没有该键时不会命中 Deny）。
+###############################################################################
+
+data "aws_iam_policy_document" "apply_boundary" {
+  #checkov:skip=CKV_AWS_356: 权限边界本身按服务列出动作，具体资源由身份策略约束；边界的目的是收紧最大权限而不是重复资源白名单。
+  #checkov:skip=CKV_AWS_111: 边界的 Allow 只是上限，实际写权限仍受 apply_mutations 身份策略的约束。
+  #checkov:skip=CKV_AWS_109: 见 CKV_AWS_111；IAM 提权动作已在 DenyIdentityEscalation 中显式拒绝。
+  #checkov:skip=CKV_AWS_108: 见 CKV_AWS_111。
+
+  statement {
+    sid    = "AllowedServices"
+    effect = "Allow"
+    actions = [
+      "autoscaling:*",
+      "ec2:*",
+      "kms:*",
+      "logs:*",
+      "rds:*",
+      "s3:*",
+      "secretsmanager:*",
+      "sts:*",
+      # IAM 只列本仓库实际用到的动作：角色、内联策略、实例配置文件、
+      # PassRole（由身份策略再按 iam:PassedToService 约束）和服务相关角色。
+      "iam:AddRoleToInstanceProfile",
+      "iam:AttachRolePolicy",
+      "iam:CreateInstanceProfile",
+      "iam:CreateRole",
+      "iam:CreateServiceLinkedRole",
+      "iam:DeleteInstanceProfile",
+      "iam:DeleteRole",
+      "iam:DeleteRolePolicy",
+      "iam:DetachRolePolicy",
+      "iam:GetInstanceProfile",
+      "iam:GetPolicy",
+      "iam:GetPolicyVersion",
+      "iam:GetRole",
+      "iam:GetRolePolicy",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListInstanceProfileTags",
+      "iam:ListInstanceProfiles",
+      "iam:ListInstanceProfilesForRole",
+      "iam:ListPolicies",
+      "iam:ListRolePolicies",
+      "iam:ListRoleTags",
+      "iam:PassRole",
+      "iam:PutRolePolicy",
+      "iam:RemoveRoleFromInstanceProfile",
+      "iam:TagInstanceProfile",
+      "iam:TagRole",
+      "iam:UntagInstanceProfile",
+      "iam:UntagRole",
+      "iam:UpdateAssumeRolePolicy",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "DenyIdentityEscalation"
+    effect = "Deny"
+    actions = [
+      "iam:AddUserToGroup",
+      "iam:AttachUserPolicy",
+      "iam:CreateAccessKey",
+      "iam:CreateLoginProfile",
+      "iam:CreateUser",
+      "iam:PutUserPolicy",
+      "iam:UpdateLoginProfile",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "DenyOutsideDeployRegion"
+    effect    = "Deny"
+    actions   = ["*"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringNotEqualsIfExists"
+      variable = "aws:RequestedRegion"
+      values   = [var.aws_region]
+    }
+  }
+}
+
+resource "aws_iam_policy" "apply_boundary" {
+  name        = "${var.apply_role_name_prefix}-permissions-boundary"
+  description = "Permissions boundary for Terraform apply roles (R-21): approved services only, no IAM user credentials, deploy region only."
+  policy      = data.aws_iam_policy_document.apply_boundary.json
+
+  tags = local.tags
 }
 
 ###############################################################################
@@ -424,6 +694,7 @@ resource "aws_iam_role" "apply" {
   description          = "Terraform apply role for the ${each.value} environment (human-approved runs only)"
   assume_role_policy   = data.aws_iam_policy_document.apply_trust[each.value].json
   max_session_duration = 3600
+  permissions_boundary = aws_iam_policy.apply_boundary.arn
 
   tags = merge(local.tags, { Role = "apply", Environment = each.value })
 }

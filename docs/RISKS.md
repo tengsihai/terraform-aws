@@ -9,30 +9,34 @@
 | --- | --- | --- | --- |
 | R-01 | 自动化误执行 `apply` / `destroy` | 高 | 已缓解 |
 | R-02 | 离线 plan 被误当作已校验计划 | 高 | 已缓解 |
-| R-03 | `aws_account_id` 仍为占位符 | 高 | 已缓解 |
+| R-03 | `aws_account_id` 仍为占位符（仅 staging/prod） | 高 | 已缓解 |
 | R-04 | 私网子网无 IPv4 出网 | 中 | 已接受 |
 | R-05 | 未启用 Interface 端点导致 SSM/ECR 不可用 | 中 | 已接受 |
 | R-06 | S3 日志桶无跨区域复制 | 中 | 已接受 |
 | R-07 | dev/staging 日志保留不足 1 年 | 中 | 已接受 |
-| R-08 | 远端 state 桶需手工创建与加固 | 高 | 待处理 |
+| R-08 | 远端 state 桶需手工创建与加固 | 高 | 已缓解（dev） |
 | R-09 | KMS 密钥策略授予账户 root 全权 | 中 | 已接受 |
-| R-10 | 无网络 ACL、无集中式流量检查 | 中 | 待处理 |
+| R-10 | 无网络 ACL、无集中式流量检查 | 中 | 已接受（当前需求） |
 | R-11 | 私网 IPv6 默认不分配地址 | 低 | 已接受 |
 | R-12 | 桶名依赖占位账户 ID，可能与现有桶冲突 | 中 | 已缓解 |
-| R-13 | 无跨账户 / Transit Gateway 连接能力 | 中 | 待处理 |
+| R-13 | 无跨账户 / Transit Gateway 连接能力 | 中 | 已接受（无跨账户需求） |
 | R-14 | Checkov severity 元数据离线缺失 | 中 | 已缓解 |
-| R-15 | 无集成测试（Terratest 等） | 中 | 待处理 |
+| R-15 | 无集成测试（Terratest 等） | 中 | 已缓解（plan 级） |
 | R-16 | flow logs 60 秒聚合增加成本 | 低 | 已接受 |
-| R-17 | 无 drift detection | 中 | 待处理 |
-| R-18 | 未做 VPC / EIP 配额预检 | 低 | 待处理 |
+| R-17 | 无 drift detection | 中 | 已缓解 |
+| R-18 | 未做 VPC / EIP 配额预检 | 低 | 已缓解 |
 | R-19 | provider 版本为区间约束，依赖 lock 文件 | 低 | 已缓解 |
-| R-20 | 未强制资源标签合规 | 低 | 待处理 |
-| R-21 | CI apply 角色权限偏宽 | 高 | 待处理 |
+| R-20 | 未强制资源标签合规 | 低 | 已缓解 |
+| R-21 | CI apply 角色权限偏宽 | 高 | 已缓解（权限边界） |
 | R-22 | plan 工件的可信度依赖 GitHub | 中 | 已缓解 |
 | R-23 | 第三方 Action 供应链风险 | 中 | 已缓解 |
 | R-24 | fork PR 无 plan 覆盖 | 低 | 已接受 |
 | R-25 | drift 检测只覆盖 Terraform 管理的资源 | 低 | 已接受 |
 | R-26 | 合并即部署，缺少独立审批 | 中 | 已接受 |
+| R-27 | 跳板机由 ASG 按需拉起 | 中 | 已缓解 |
+| R-28 | 开发人员 IAM 策略需要单独分发 | 中 | 已接受（策略已输出） |
+| R-29 | RDS 单 AZ，无跨 AZ 故障切换 | 中 | 已接受 |
+| R-30 | 跳板机出站全部允许 | 低 | 已接受 |
 
 ---
 
@@ -43,7 +47,7 @@
 - **场景**：变更绕过人工把关直接落到真实账户。
 - **影响**：生产网络被创建/修改/删除。VPC 删除会连带删除其下所有资源。
 - **人工把关点**：**合并 PR**。main 上的 ruleset `protect-main` 禁止直接 push，
-  要求 4 项 status checks 全绿；合并这个动作就是审批。
+  要求全部 status checks 全绿；合并这个动作就是审批。
 - **缓解**：
   - 本地：`scripts/lib.sh` 的 `refuse_mutation()` 硬拒绝，`Makefile` 的 `apply`/`destroy`
     目标只打印说明并 `exit 1`；
@@ -63,7 +67,7 @@
 - **影响**：一次合并立即改变真实基础设施；plan 与 apply 之间没有人再看过一眼。
 - **缓解**：
   - PR 上有 plan 摘要粘性评论，评审时能看到「会创建/修改/删除什么」；
-  - PR 必须过 4 项检查才允许合并；
+  - PR 必须过全部 required status checks 才允许合并；
   - destructive 变更在摘要里有醒目告警（`> [!WARNING]`）；
   - `TF_ENVIRONMENTS` 只列已确认要自动部署的环境。
 - **决策**：单人仓库接受；接入 staging/prod 时必须恢复 required reviewers（R-01）。
@@ -83,27 +87,130 @@
 
 ### R-03 `aws_account_id` 仍为占位符
 
-- **场景**：`env.tfvars` 里的 `123456789012` 未替换，被用于 KMS 策略、S3 桶策略、
-  IAM 信任策略的 ARN。
-- **影响**：策略指向不存在的账户，资源创建后无人可访问；flow log 投递被拒。
+- **适用范围**：**仅 staging / prod**。dev 已经是真实账户，不受此条影响。
+
+| 环境 | `env.tfvars` 中的值 | 状态 |
+| --- | --- | --- |
+| dev | `790354569983` | 真实账户，已与 `aws sts get-caller-identity` 核对一致 |
+| staging | `123456789012` | **占位符，接入前必须替换** |
+| prod | `123456789012` | **占位符，接入前必须替换** |
+
+- **场景**：占位账户 ID 被用于 KMS 策略、S3 桶名与桶策略、IAM 信任策略、
+  RDS 托管密钥 ARN 等位置。
+- **影响**：策略指向不存在的账户，资源创建后无人可访问；flow log 投递被拒；
+  S3 桶名可能与他人冲突。
 - **缓解**：
   - `plan.sh` 在线模式会比对 `aws sts get-caller-identity` 与实际账户，不一致直接中止；
-  - 每次 apply 前必须走该脚本。
-- **状态**：已缓解，但需在首次真实部署前替换。
+  - staging/prod 接入 CI 前，把 `env.tfvars` 里的值替换成目标账户 ID，并重新生成 plan。
+- **状态**：dev 已解决；staging/prod 接入时替换（不阻塞当前环境）。
 
 ### R-08 远端 state 桶需手工创建与加固
 
 - **场景**：`backend.tf` 只声明了空的 `backend "s3" {}`，真实桶、KMS key、版本控制和
   Block Public Access 需要预先存在。
 - **影响**：桶未加固 → state 泄漏（含资源 ID、部分敏感属性）；桶无版本控制 → state 损坏无法回滚。
-- **缓解（部署前必须完成）**：
-  - 开启版本控制；
-  - 默认 SSE-KMS 加密；
-  - Block Public Access 四项全开；
-  - 桶策略拒绝非 TLS；
-  - 启用 S3 原生锁（`use_lockfile = true`）或 DynamoDB 锁表；
-  - 只允许 Terraform 执行角色读写。
-- **状态**：待处理。
+
+**当前状态（2026-11-06 核对，账户 790354569983）**：桶
+`platform-terraform-state-790354569983-ap-northeast-1` 已存在，且以下项均已就绪：
+
+| 项 | 现状 |
+| --- | --- |
+| 版本控制 | `Enabled` |
+| 默认加密 | `AES256`（SSE-S3，免费） |
+| Block Public Access | 四项全开 |
+| 对象所有权 | `BucketOwnerEnforced` |
+| 桶策略 | 已拒绝非 TLS 请求 |
+| 状态锁 | `use_lockfile = true`（S3 原生锁，无需 DynamoDB） |
+
+因此对该账户来说 R-08 只剩“确认”这一步；KMS CMK 是**可选**加固，不是必需项。
+
+**成本**：
+
+- 当前方案（SSE-S3 + S3 原生锁）：**没有额外固定费用**。state 文件只有几十 KB，
+  存储和 PUT/GET 请求费用可以忽略（每月远低于 $0.01）。
+- 如果改用专用 KMS CMK：**约 $1.00/月**（按小时折算）外加每 10,000 次请求 $0.03；
+  Terraform 每次 plan/apply 的请求量很小。改用 CMK 时在 `backend.hcl` 填
+  `kms_key_id`、在 `bootstrap/terraform.tfvars` 填 `state_kms_key_arn`。
+- 版本控制会保留旧版本，长期会累积少量存储；按当前规模同样可以忽略。
+
+**从零创建的具体步骤**（一次性，用管理员凭据执行；如果桶已存在，只用第 2–7 步核对）：
+
+```bash
+export REGION=ap-northeast-1
+export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export BUCKET="platform-terraform-state-${ACCOUNT_ID}-${REGION}"
+
+# 1.（可选，会产生约 $1/月的 CMK 费用）专用 KMS CMK + 自动轮转
+KEY_ID=$(aws kms create-key --region "$REGION" \
+  --description "Terraform remote state" \
+  --query KeyMetadata.KeyId --output text)
+aws kms enable-key-rotation --region "$REGION" --key-id "$KEY_ID"
+aws kms create-alias --region "$REGION" \
+  --alias-name alias/terraform-state --target-key-id "$KEY_ID"
+
+# 2. 桶（ap-northeast-1 必须带 LocationConstraint）
+aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
+  --create-bucket-configuration LocationConstraint="$REGION"
+
+# 3. 版本控制（state 回滚的前提）
+aws s3api put-bucket-versioning --bucket "$BUCKET" \
+  --versioning-configuration Status=Enabled
+
+# 4. 默认 SSE-KMS 加密（bucket key 降低 KMS 调用成本）
+aws s3api put-bucket-encryption --bucket "$BUCKET" \
+  --server-side-encryption-configuration '{
+    "Rules": [{
+      "ApplyServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "aws:kms",
+        "KMSMasterKeyID": "alias/terraform-state"
+      },
+      "BucketKeyEnabled": true
+    }]
+  }'
+
+# 5. Block Public Access 四项全开
+aws s3api put-public-access-block --bucket "$BUCKET" \
+  --public-access-block-configuration \
+  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+
+# 6. 关闭 ACL，统一桶所有者
+aws s3api put-bucket-ownership-controls --bucket "$BUCKET" \
+  --ownership-controls 'Rules=[{ObjectOwnership=BucketOwnerEnforced}]'
+
+# 7. 拒绝非 TLS 请求
+cat > /tmp/state-bucket-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "DenyInsecureTransport",
+    "Effect": "Deny",
+    "Principal": "*",
+    "Action": "s3:*",
+    "Resource": [
+      "arn:aws:s3:::${BUCKET}",
+      "arn:aws:s3:::${BUCKET}/*"
+    ],
+    "Condition": { "Bool": { "aws:SecureTransport": "false" } }
+  }]
+}
+EOF
+aws s3api put-bucket-policy --bucket "$BUCKET" --policy file:///tmp/state-bucket-policy.json
+rm -f /tmp/state-bucket-policy.json
+```
+
+完成后再接线：
+
+1. `environments/<env>/backend.hcl` 填入 `bucket`、`key`、`region`、`encrypt = true`，
+   保留 `use_lockfile = true`（S3 原生锁，无需 DynamoDB）；只有使用 CMK 时才加
+   `kms_key_id = alias/terraform-state`，SSE-S3 时不要填；
+2. `bootstrap/terraform.tfvars` 填同一个 `state_bucket_name`；使用 CMK 时再填
+   `state_kms_key_arn`；
+3. `terraform init -backend-config=backend.hcl` 验证能读到 state。
+
+只允许 Terraform 执行角色读写这一点由 bootstrap 的 `state_access` 策略保证；
+桶策略层面再按角色 ARN 收窄属于可选的第二层加固。
+
+- **状态**：dev 账户已满足（SSE-S3）；staging/prod 接入时按上面步骤创建各自的桶。
 
 ---
 
@@ -154,9 +261,10 @@
 
 - **场景**：只使用安全组（有状态），未配置自定义 NACL，也没有 Network Firewall / TGW 检查点。
 - **影响**：东西向流量（子网之间、AZ 之间）没有额外拦截层，出网流量也没有域名级过滤。
-- **缓解**：私网本就无 IPv4 出网，公网子网应只放 ALB/NAT（本设计无 NAT）。
-  需要深度检查时，应通过 Network Firewall 或集中式检查 VPC 实现。
-- **状态**：待处理（取决于合规要求）。
+- **现有控制**：安全组零公网入站、私网无 IPv4 出网、VPC flow logs 记录全部流量。
+- **决策**：集中式流量检查需要 Network Firewall 或 TGW 检查 VPC，属于跨账户/合规级项目，
+  会引入固定成本和运维面；当前需求不包含，作为已知缺口接受。合规要求出现时单独立项。
+- **状态**：已接受（当前需求）。
 
 ### R-12 桶名依赖占位账户 ID
 
@@ -170,7 +278,9 @@
 
 - **场景**：模块不创建 TGW 挂载、VPC peering 或 RAM 共享。
 - **影响**：多账户或混合云场景需要额外的连接层，当前需手工实现。
-- **状态**：待处理。
+- **决策**：当前是单账户、单 VPC 设计，没有跨账户或本地数据中心互联需求；
+  需要时通过 TGW 或 peering 单独设计，不影响现有地址规划。
+- **状态**：已接受（无跨账户需求）。
 
 ### R-14 Checkov severity 元数据离线缺失
 
@@ -183,19 +293,87 @@
 
 ### R-15 无集成测试
 
-- **场景**：只有 `validate` 和 `plan`，没有 Terratest 或 `terraform test` 的
-  真实创建/销毁验证。
-- **影响**：路由、端点、IPv6 这类只能在真实环境验证的行为，缺陷要到 apply 后才暴露。
-- **缓解**：建议在独立沙箱账户补 `terraform test`（`*.tftest.hcl`）验证 plan 断言。
-- **状态**：待处理。
+- **场景**：真实创建/销毁（Terratest）仍未覆盖；但配置层面的 plan 断言已经补齐。
+- **已实施**：
+  - `modules/bastion/tests/bastion.tftest.hcl`：ASG 0/1/0、实例类型、无密钥对、
+    根卷加密 + DeleteOnTermination、IMDSv2、公网 IPv4、开发人员策略的标签/MFA/文档限制；
+  - `modules/rds-mysql/tests/rds_mysql.tftest.hcl`：MySQL、单 AZ、不对公网、
+    存储加密、Secrets Manager 托管密码、仅安全组来源的 3306 入站；
+  - 使用 `mock_provider`，不访问 AWS；`make test` 本地运行，
+    `pr-checks.yml` 的 `module-tests` job 在 CI 运行。
+- **剩余风险**：mock 测试验证的是配置图，不是真实 AWS 行为（路由、端点、IPv6 仍需实机验证）。
+  真实创建/销毁测试应在独立沙箱账户用 Terratest 或 `terraform test` + 真实 provider 完成。
+- **状态**：已缓解（plan 级集成测试已落地）；真实 apply/destroy 测试待沙箱账户。
 
 ### R-17 无 drift detection
 
 - **场景**：控制台手工改动不会被自动发现。
 - **影响**：下一个人 apply 时可能产生意外 diff 甚至替换。
-- **缓解**：建议对 prod 每日跑一次带凭据的 `terraform plan -detailed-exitcode`，
-  以只读方式把 drift 报警出来（不 apply）。
-- **状态**：待处理。
+- **已实施**：`.github/workflows/drift-detection.yml` 在工作日 01:00 UTC 运行，
+  用只读的 `terraform-plan` 角色执行 `terraform plan -detailed-exitcode`，
+  发现漂移时自动开/更新带 `drift` 标签的 GitHub issue，并上传 plan 报告；
+  流程只读，不会 apply。
+- **剩余风险**：只覆盖 Terraform 管理的资源（见 R-25）。
+- **状态**：已缓解。
+
+### R-27 跳板机由 ASG 按需拉起（公有子网）
+
+- **场景**：`bastion` 模块在公有子网创建 0~1 台的 ASG，实例自动分配公网 IPv4
+  （不绑 EIP），SSM Agent 的 443 出站经 IGW 直连 SSM 公网端点；不部署
+  ssm / ec2messages / ssmmessages Interface 端点。
+- **影响**：实例有公网地址，理论上可被扫描；实际风险在于谁能调用
+  `ssm:StartSession`。拿到会话的人可以建立到 RDS 的端口转发。
+- **缓解**：
+  - 安全组**没有任何入站规则**，没有 SSH、密钥对和 22 端口；
+  - IMDSv2 强制（`http_tokens = "required"`），根卷加密；
+  - ASG 默认 0 实例，不需要时不存在可连接的目标；
+  - 模块输出 `developer_policy_json`：只允许 `ssm:StartSession`，
+    通过 `ssm:resourceTag/Bastion` 限定到本环境的实例，通过文档 ARN 限定
+    只能用 `AWS-StartPortForwardingSessionToRemoteHost`，并要求 MFA；
+  - CloudTrail 记录每一次 StartSession。
+- **状态**：已缓解。开发人员策略需要实际挂到 IAM 用户/组上（见 R-28）。
+
+### R-28 开发人员 IAM 策略需要单独分发
+
+- **场景**：模块只**输出**最小权限策略，不创建 IAM 用户、组或角色。
+- **影响**：如果开发人员继续使用更宽的现成权限（例如 `ssm:*` 或 `AdministratorAccess`），
+  上面所有标签和文档限制都不会生效。
+- **分发步骤**（策略已由 `terraform output bastion_developer_policy_json` 提供）：
+
+  ```bash
+  # 1. 导出策略 JSON
+  terraform -chdir=environments/dev output -raw bastion_developer_policy_json \
+    > /tmp/bastion-developer-dev.json
+
+  # 2. 建成客户托管策略（每个环境一份，标签值不同）
+  POLICY_ARN=$(aws iam create-policy \
+    --policy-name bastion-developer-dev \
+    --policy-document file:///tmp/bastion-developer-dev.json \
+    --query Policy.Arn --output text)
+
+  # 3a. 挂到 IAM 用户
+  aws iam attach-user-policy --user-name <developer> --policy-arn "$POLICY_ARN"
+
+  # 3b. 或挂到 IAM 组
+  aws iam attach-group-policy --group-name db-developers --policy-arn "$POLICY_ARN"
+  ```
+
+  使用 IAM Identity Center 时，把同一份 JSON 作为 permission set 的内联策略，
+  不要另外授予 `ssm:*`。
+- **复核**：用 IAM Access Analyzer 确认没有更宽的 `ssm:StartSession` 授权；
+  定期检查 CloudTrail 的 StartSession 记录。
+- **决策**：挂载到用户/组/SSO 属于组织 IAM 流程，不在 Terraform 里创建 IAM 用户或组；
+  策略内容本身已经落地并可直接使用。
+- **状态**：已接受（策略已输出，分发步骤已明确，挂载由组织执行）。
+
+### R-29 RDS 单 AZ，无跨 AZ 故障切换
+
+- **场景**：需求明确要求单 AZ，模块固定 `multi_az = false`。
+- **影响**：AZ 故障时实例不可用，直到 AWS 恢复或从快照重建；RPO 取决于备份窗口。
+- **缓解**：自动备份保留 7 天（`backup_retention_period` 可调）；staging/prod
+  开启删除保护并保留最终快照；恢复时可以把快照建到其他 AZ。
+- **决策**：需求要求单 AZ，接受可用性取舍。需要 HA 时改模块为 `multi_az = true`。
+- **状态**：已接受。
 
 ---
 
@@ -205,9 +383,10 @@
 | --- | --- | --- |
 | R-11 | 私网 IPv6 默认不分配地址 | 子网有 /64 但不自动分配，需按 ENI 显式开启；避免隐式暴露 |
 | R-16 | flow logs 60 秒聚合成本 | 600 秒更便宜但排查变慢；仅在成本敏感时下调 |
-| R-18 | 未做配额预检 | 每账户每区域 VPC/EIP/端点配额可能不足，需在 apply 前确认 |
+| R-18 | 未做配额预检 | 已提供 `make quotas`（`scripts/check-quotas.sh`，只读）：对比 VPC / IGW / EIP / RDS 配额与已用量 + 计划量，apply 前人工运行 |
 | R-19 | provider 版本为区间约束 | `>= 6.0.0, < 7.0.0`，实际版本由 `.terraform.lock.hcl` 锁定；lock 文件必须入库 |
-| R-20 | 未强制标签合规 | 通过 provider `default_tags` 注入基础标签，但未用 SCP/Config 强制 |
+| R-20 | 未强制标签合规 | 已提供 `make check-tags`（`scripts/check-tags.py`）并接入 CI：基于离线 plan JSON，要求每个可打标签资源带 `Project` / `Environment` / `ManagedBy` / `Repository`；SCP/Config 级别的强制仍在组织层 |
+| R-30 | 跳板机出站全部允许 | 需求要求；实例无入站规则，唯一访问路径是 SSM |
 
 ---
 
@@ -217,17 +396,25 @@
 
 - **场景**：`bootstrap/` 创建的 apply 角色能管理本仓库涉及的全部资源类型，资源范围是账户级。
 - **影响**：如果 apply 工作流被滥用（恶意 plan + 有审批权的人放行），影响面是整个账户的
-  网络/存储/KMS/日志资源，而不限于本项目。
+  网络/存储/KMS/日志/EC2/RDS 资源，而不限于本项目。
 - **原因**：Terraform 的 `Create*` 动作作用的对象在执行前不存在，无法预先写成 ARN 白名单。
   硬要收窄会导致首次创建失败。
-- **缓解（按优先级）**：
-  1. 给角色加 **permission boundary**，设一条不可越过的硬上限；
-  2. 用 **SCP** 限制可操作区域、服务与资源标签；
-  3. 用 IAM Access Analyzer 基于 CloudTrail 生成更精确的策略；
-  4. 把 CI 放在专用的工作负载账户，通过跨账户角色访问目标账户。
-- **检测**：`CKV_AWS_108/109/111/356` 对该策略已内联豁免并写明理由；
+- **已实施（第一层）**：apply 角色挂载了**权限边界**
+  `aws_iam_policy.apply_boundary`（[bootstrap/main.tf](../bootstrap/main.tf)）：
+  - 只允许 `ec2` / `s3` / `kms` / `logs` / `rds` / `autoscaling` / `secretsmanager` /
+    `sts` 和显式列出的 IAM 动作（没有 `iam:*`）；
+  - 显式拒绝 `iam:CreateUser`、`iam:CreateAccessKey`、`iam:CreateLoginProfile`、
+    `iam:AttachUserPolicy`、`iam:PutUserPolicy` 等凭据/提权动作；
+  - 区域型 API 通过 `aws:RequestedRegion` 限定在 `var.aws_region`（默认 ap-northeast-1），
+    全球型 API（IAM、STS）不受影响。
+- **剩余风险与后续**：
+  1. 边界内的服务仍是账户级资源范围，能创建 IAM 角色并以 EC2 实例配置文件的方式
+     使用——恶意 plan 仍可能滥用。第二层应用 **SCP** 限制服务、区域和资源标签；
+  2. 用 IAM Access Analyzer 基于 CloudTrail 生成更精确的策略；
+  3. 长期方案是把 CI 放在专用的工作负载账户，通过跨账户角色访问目标账户。
+- **检测**：`CKV_AWS_108/109/111/356/2_AWS_40` 对相关策略已内联豁免并写明理由；
   豁免一旦扩散到其他资源，Code Review 必须拒绝。
-- **状态**：待处理。
+- **状态**：已缓解（权限边界已落地）；剩余收紧项（SCP、独立账户）属于组织层决策。
 
 ### R-22 plan 工件的可信度依赖 GitHub
 
@@ -277,5 +464,8 @@
 1. R-03：`env.tfvars` 的 `aws_account_id` 是真实账户。
 2. R-08：state 桶已开启版本控制、加密、Block Public Access、锁。
 3. R-04/R-05：业务确实不需要 IPv4 出网，或已启用所需 Interface 端点。
-4. R-21：apply 角色的权限边界已确认（至少已评估是否加 permission boundary）。
-5. `docs/PLAN-CHECKLIST.md` 的全部校验点通过。
+4. R-21：apply 角色已挂权限边界，确认边界 ARN 与预期一致；SCP 是否到位另行评估。
+5. R-27/R-28：跳板机的 SSM 访问权限、开发人员策略分发和 MFA 要求已确认。
+6. R-29：已确认业务接受 RDS 单 AZ。
+7. `make quotas`（R-18）显示配额充足；`make check-tags` 与 `make test` 全部通过。
+8. `docs/PLAN-CHECKLIST.md` 的全部校验点通过。

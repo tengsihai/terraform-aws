@@ -40,3 +40,7 @@ bootstrap/terraform.tfvars
 # Python 缓存
 __pycache__/
 *.pyc
+
+# 模块自身不锁定 provider：版本由各根目录的 .terraform.lock.hcl 锁定，
+# 模块 init 产生的 lock 文件只用于本地 terraform test。
+modules/*/.terraform.lock.hcl

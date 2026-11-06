@@ -65,3 +65,47 @@ module "vpc" {
   # 否则 AWS 在校验 flow log 配置时会拒绝。
   depends_on = [module.logging]
 }
+
+module "bastion" {
+  source = "../../modules/bastion"
+
+  name        = local.name_prefix
+  environment = local.environment
+  aws_region  = var.aws_region
+  account_id  = var.aws_account_id
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.public_subnet_ids
+
+  ami_id           = var.bastion_ami_id
+  instance_type    = var.bastion_instance_type
+  min_size         = var.bastion_min_size
+  max_size         = var.bastion_max_size
+  desired_capacity = var.bastion_desired_capacity
+
+  # 公有子网，自动分配公网 IPv4，经 IGW 直连 SSM 公网端点；
+  # 无入站规则、无 SSH、无密钥对、无 EIP。ASG 默认 desired_capacity = 0。
+  tags = local.common_tags
+}
+
+module "rds" {
+  source = "../../modules/rds-mysql"
+
+  name        = local.name_prefix
+  environment = local.environment
+  vpc_id      = module.vpc.vpc_id
+  subnet_ids  = module.vpc.private_subnet_ids
+
+  engine_version  = var.db_engine_version
+  instance_class  = var.db_instance_class
+  db_name         = var.db_name
+  master_username = var.db_master_username
+
+  # 入站只允许跳板机那一张安全组；单 AZ、公网不可达由模块内部固定。
+  allowed_security_group_ids = [module.bastion.security_group_id]
+
+  deletion_protection = var.db_deletion_protection
+  skip_final_snapshot = var.db_skip_final_snapshot
+
+  tags = local.common_tags
+}

@@ -2,8 +2,10 @@
 
 ## 1. 总览
 
-每个环境是一个独立的 Terraform 根目录，只做两件事：调用 `logging-s3` 模块建加密日志桶，
-调用 `vpc` 模块建网络。业务负载不在本仓库范围内，但通过模块输出去消费网络。
+每个环境是一个独立的 Terraform 根目录，做四件事：调用 `logging-s3` 模块建加密日志桶，
+调用 `vpc` 模块建网络，调用 `bastion` 模块在**公有子网**放一个 SSM 跳板 ASG，
+调用 `rds-mysql` 模块在私网子网放一台 MySQL。业务负载不在本仓库范围内，
+但通过模块输出去消费网络。
 
 ```
                          Internet
@@ -15,8 +17,8 @@
         │                   │                   │
    ┌────┴────┐         ┌────┴────┐         ┌────┴────┐   AZ-a / AZ-c / AZ-d
    │ public  │         │ public  │         │ public  │   map_public_ip_on_launch = false
-   │  /20    │         │  /20    │         │  /20    │
-   └────┬────┘         └────┬────┘         └────┬────┘
+   │  /20    │         │  /20    │         │  /20    │   └ 跳板机 ASG（0~1 台，t4g.micro）
+   └────┬────┘         └────┬────┘         └────┬────┘      SSM 流量经 IGW 直连公网端点
         │  public RT: 0.0.0.0/0 → IGW, ::/0 → IGW
         │                   │                   │
         │   ┌───────────────┴───────────────┐   │
@@ -27,7 +29,7 @@
    │ private │         │ private │         │ private │   每 AZ 一张独立私网路由表
    │  /20    │         │  /20    │         │  /20    │   ❌ 没有 0.0.0.0/0
    └────┬────┘         └────┬────┘         └────┬────┘      ::/0 → Egress-only IGW
-        │                   │                   │
+        │                   │                   │         └ RDS MySQL（单 AZ）
         └───────── 无 NAT 网关 / 无 IPv4 出网 ───┘
 ```
 
@@ -83,6 +85,10 @@
 | S3 | Gateway | 启用 | 挂在公网表 + 3 张私网表；免费 |
 | 其他 | Interface | 关闭 | 由 `interface_endpoint_services` 控制 |
 
+三个环境的 `interface_endpoint_services` 都保持为空：跳板机放在公有子网，
+SSM Agent 的 443 出站经 IGW 直连 SSM 公网端点，不需要 Interface 端点。
+需要私网访问 SSM/ECR 时再按需打开。
+
 S3 网关端点策略只授予数据面动作（`Get/Put/List/Delete`），资源范围是全分区 S3。
 这不是授权边界——真正的鉴权由 IAM identity policy 和桶策略决定；端点策略若按单桶收窄，
 会让账户里其他工作负载的 S3 访问静默失败，所以这里刻意保持数据面级别。
@@ -98,8 +104,10 @@ Interface 端点共用一张安全组：入站只允许 VPC 的 IPv4/IPv6 网段
      或 `::/0`，`terraform plan` 直接失败并给出明确错误
    - 模块自身写的规则：接口端点 SG 只允许 `var.vpc_cidr` 和 VPC 的 IPv6 段
 3. 所有规则必须带 `description`（Checkov CKV_AWS_23）。
-4. 出站默认收窄到 VPC 网段，不存在 `0.0.0.0/0` 出站。
-5. `map_public_ip_on_launch = false`，公网子网不隐式发公网 IP。
+4. 出站默认收窄到 VPC 网段。唯一的例外是跳板机安全组的 443 出站
+   （公网子网、无 NAT，SSM 和 `dnf` 必须走 IGW），见第 8 节。
+5. `map_public_ip_on_launch = false`；只有跳板机在启动模板里显式启用公网 IPv4
+   （公有子网，经 IGW 访问 SSM 公网端点），不绑 EIP。
 
 ## 6. 日志与审计
 
@@ -120,7 +128,9 @@ S3 日志桶的访问日志**写到桶自身**。这是刻意选择：审计线�
 ```
 environments/<env>
    ├── module.logging  (modules/logging-s3)  → bucket_arn
-   └── module.vpc      (modules/vpc)         → vpc_id, subnet_ids, ...
+   ├── module.vpc      (modules/vpc)         → vpc_id, subnet_ids, ...
+   ├── module.bastion  (modules/bastion)     → asg_name, security_group_id, developer_policy_json
+   └── module.rds      (modules/rds-mysql)   → endpoint, master_user_secret_arn
 ```
 
 - `logging-s3` 完全不知道 VPC 的存在，只暴露 `bucket_arn`。
@@ -128,18 +138,93 @@ environments/<env>
   两个参数必须分开：`count` 只能依赖 plan 期已知值，而桶 ARN 要等到 apply 后才确定。
 - 环境层用 `depends_on = [module.logging]` 保证桶策略和 KMS 授权先于 flow log 创建，
   否则 AWS 会在校验 flow log 目标时拒绝。
+- `rds` 接收 `bastion` 的安全组 ID 作为唯一入站来源；`bastion` 不反向依赖 `rds`。
+- 跳板机不再挂 Secrets Manager 读取权限：实例角色只有 SSM 托管策略。
 
-## 8. 变更流程
+## 8. 数据库与跳板机
+
+需求约束：RDS 单 AZ、`db.t4g.micro`、私网子网、密码用 Secrets Manager；
+跳板机为纯 ASG 方案，公有子网，只做 SSM 端口转发，不做 SSH。
+
+| 项 | 选择 | 说明 |
+| --- | --- | --- |
+| RDS 引擎 | MySQL 8.4 | `engine_version` 写 major.minor，minor 由 RDS 选择 |
+| 实例类 | `db.t4g.micro` | 单 AZ（`multi_az = false`） |
+| 子网 | 三张私网子网组成的 DB subnet group | RDS 拒绝少于两个 AZ 的子网组 |
+| 公网访问 | `publicly_accessible = false` | 私网路由表本来也没有 IPv4 出网 |
+| 密码 | `manage_master_user_password = true` | RDS 在 Secrets Manager 生成并轮转，state 无明文 |
+| 加密 | `storage_encrypted = true` | 默认 `aws/rds` 托管密钥；可传 `kms_key_arn` 用 CMK |
+| 入站 | 仅跳板机安全组 → TCP/3306 | 没有其他来源，也没有出站规则 |
+| 跳板机 | ASG + Launch Template，`t4g.micro`，AL2023 arm64 | 公有子网，自动分配公网 IPv4 |
+| 跳板机容量 | min 0 / max 1 / desired 0 | 空闲时零计算、零 EBS 费用 |
+| 跳板机入站 | 无任何规则 | 无 SSH、无密钥对、无 22 端口 |
+| 跳板机出站 | 全部允许 | 按需求；SSM 的 443 经 IGW 直连公网端点 |
+| 跳板机根卷 | gp3、加密、`delete_on_termination = true` | 实例回收即删除，不留存储账单 |
+| SSM 访问 | 公网 SSM 端点（经 IGW） | 不创建 ssm / ec2messages / ssmmessages Interface 端点 |
+
+跳板机安全组有一条 `0.0.0.0/0` **出站**规则，这是需求明确要求的“出站全部允许”，
+不是遗漏；入站面是零规则，暴露面只剩“谁有权限 StartSession”。公网 IPv4 是
+自动分配的，不使用 EIP。
+
+### 通过 SSM 端口转发连 RDS
+
+```bash
+# 拉起一台
+aws autoscaling set-desired-capacity --region ap-northeast-1 \
+  --auto-scaling-group-name <asg> --desired-capacity 1
+
+# 等 SSM Agent 上线
+aws ssm describe-instance-information --region ap-northeast-1 \
+  --filters Key=PingStatus,Values=Online
+
+# 取实例 ID
+aws autoscaling describe-auto-scaling-groups --region ap-northeast-1 \
+  --auto-scaling-group-names <asg> \
+  --query 'AutoScalingGroups[0].Instances[].InstanceId' --output text
+
+# 本地端口直连 RDS
+aws ssm start-session --region ap-northeast-1 --target <instance-id> \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["<rds-endpoint>"],"portNumber":["3306"],"localPortNumber":["13306"]}'
+
+# 缩回 0
+aws autoscaling set-desired-capacity --region ap-northeast-1 \
+  --auto-scaling-group-name <asg> --desired-capacity 0
+```
+
+`AWS-StartPortForwardingSessionToRemoteHost` 由跳板机上的 SSM Agent 直接连接
+RDS 端点，本地 DBeaver/Navicat 指向 `127.0.0.1:13306` 即可。
+
+ASG 的 `desired_capacity` 设置了 `lifecycle.ignore_changes`，因此手工
+`set-desired-capacity` 之后不会被下一次 `terraform apply` 拉回 0。
+
+### 开发人员权限
+
+模块输出的 `developer_policy_json` 只授予：
+
+- 对带 `Bastion = <环境>-bastion` 标签的实例调用 `ssm:StartSession`；
+- 对 `AWS-StartPortForwardingSessionToRemoteHost` 文档调用 `ssm:StartSession`；
+- 两条语句都要求 `aws:MultiFactorAuthPresent = true`。
+
+SSM 没有 `ssm:StartPortForwardingSessionToRemoteHost` 这个 IAM action；
+端口转发的授权动作是 `ssm:StartSession`，文档 ARN 才是收窄手段。
+
+## 9. 变更流程
 
 ```
 编辑代码/变量
    │
    ├─ make validate  → fmt + validate（不连 AWS）
+   ├─ make test      → 模块 plan 断言（mock provider，不连 AWS）
    ├─ make scan      → checkov + 高危门禁
+   ├─ make quotas    → 只读配额预检（需要凭据）
    └─ make plan      → 生成 reports/<env>/plan-<ts>.tfplan
                           │
+                          ├─ make check-tags 检查资源标签
                           ├─ 人工对照 docs/PLAN-CHECKLIST.md 逐项核对
                           └─ 审批人手工 apply 该 plan 文件
 ```
+
+`make verify` 把 validate、test、check-tags、离线 plan 和 checkov 串起来一次跑完。
 
 自动化链路上不存在任何写操作入口。
