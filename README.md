@@ -125,7 +125,7 @@ feat/xxx ──PR──► dev ──PR──► staging ──PR──► prod 
 | Secrets Manager Interface 端点 | 创建 | 不创建 | 不创建 |
 | 静态站点桶 | `<prefix>-site-<account>-<region>` | 同左 | 同左 |
 | CloudFront 价格等级 | PriceClass_200 | 同左 | 同左 |
-| SPA 回退（403/404 → index.html） | 否 | 否 | 否 |
+| SPA 回退（403/404 → index.html） | 是 | 是 | 是 |
 | 预期 plan | 72 add | 71 add | 71 add |
 
 ## 静态站点（CloudFront + S3）

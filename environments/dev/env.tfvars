@@ -34,6 +34,9 @@ flow_logs_retention_in_days = 30
 log_retention_days          = 90
 enable_s3_flow_logs         = false
 
+# 前端是 SPA：S3 的 403/404 回退到 index.html（HTTP 200），深链接交给前端路由。
+site_spa_mode = true
+
 # --- Guardrail example (rejected by variable validation) --------------------
 # Uncommenting this makes `terraform plan` fail with an explicit error; that is
 # the intended behaviour, not a bug.

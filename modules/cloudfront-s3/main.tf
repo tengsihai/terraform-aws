@@ -355,10 +355,11 @@ resource "aws_cloudfront_distribution" "site" {
     for_each = var.spa_mode ? [403, 404] : []
 
     content {
-      error_code            = custom_error_response.value
-      response_code         = 200
-      response_page_path    = "/${var.default_root_object}"
-      error_caching_min_ttl = 10
+      error_code         = custom_error_response.value
+      response_code      = 200
+      response_page_path = "/${var.default_root_object}"
+      # 不缓存错误响应：SPA 回退后立刻按 index.html 的缓存策略处理。
+      error_caching_min_ttl = 0
     }
   }
 

@@ -32,10 +32,20 @@ locals {
   #
   # 两种都信任。login 和仓库名是精确匹配的，而且 login 不能包含 '@'，
   # 所以这里对数字 ID 用通配符并不会放宽信任范围。
-  repo_subject_prefixes = [
-    "${local.repo_subject}:environment:",
-    "repo:${var.github_owner}@*/${var.github_repo}@*:environment:",
-  ]
+  # 除本仓库外，允许额外的部署流水线（例如 react-aws）代入同一组角色。
+  # 每个仓库同时接受新旧两种 sub 声明格式。
+  repo_subject_prefixes = concat(
+    [
+      "${local.repo_subject}:environment:",
+      "repo:${var.github_owner}@*/${var.github_repo}@*:environment:",
+    ],
+    flatten([
+      for repo in var.additional_github_repos : [
+        "repo:${repo}:environment:",
+        "repo:${split("/", repo)[0]}@*/${split("/", repo)[1]}@*:environment:",
+      ]
+    ]),
+  )
 
   tags = merge(var.tags, {
     "managed-by" = "terraform"
@@ -472,6 +482,19 @@ data "aws_iam_policy_document" "apply_mutations" {
     effect    = "Allow"
     actions   = ["iam:CreateServiceLinkedRole"]
     resources = ["arn:${local.partition}:iam::${local.account_id}:role/aws-service-role/cloudfront.amazonaws.com/*"]
+  }
+
+  # 独立仓库的发布流水线（例如 react-aws）需要用 head-bucket / s3 sync。
+  # ListBucket 只授权到显式列出的桶，避免枚举账户里其他桶的对象名。
+  dynamic "statement" {
+    for_each = length(var.pipeline_bucket_arns) > 0 ? [1] : []
+
+    content {
+      sid       = "ListPipelineBuckets"
+      effect    = "Allow"
+      actions   = ["s3:ListBucket"]
+      resources = var.pipeline_bucket_arns
+    }
   }
 
   statement {
