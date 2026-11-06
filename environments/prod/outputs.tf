@@ -33,6 +33,11 @@ output "private_subnet_ids" {
   value       = module.vpc.private_subnet_ids
 }
 
+output "lambda_security_group_id" {
+  description = "Security group attached to the Lambda functions."
+  value       = module.vpc.additional_security_group_ids["lambda"]
+}
+
 output "private_route_table_ids" {
   description = "Per-AZ private route table IDs."
   value       = module.vpc.private_route_table_ids
