@@ -1,15 +1,14 @@
 ###############################################################################
-# Security groups
+# 安全组
 #
-# Contract: no inbound rule in this module may use 0.0.0.0/0 or ::/0.
-# That is enforced twice:
-#   1. variable validation on var.additional_security_groups
-#   2. every rule this module writes is scoped to the VPC CIDR ranges
+# 约定：本模块不会产生任何使用 0.0.0.0/0 或 ::/0 的入站规则。
+# 这由两层保证：
+#   1. var.additional_security_groups 上的变量校验
+#   2. 模块自己写的每条规则都限定在 VPC 的 CIDR 范围内
 ###############################################################################
 
-# The VPC default security group is adopted and stripped of every rule. Leaving
-# it untouched would leave an allow-all egress rule (and, before AWS changed the
-# default, an allow-all ingress rule) on every ENI that omits a security group.
+# 接管并清空 VPC 的默认安全组。放任不管的话，任何没有显式指定安全组的 ENI
+# 都会挂上一条允许全部出站的规则（在 AWS 修改默认行为之前，还包含允许全部入站）。
 resource "aws_default_security_group" "this" {
   vpc_id = aws_vpc.this.id
 

@@ -1,11 +1,10 @@
 ###############################################################################
-# VPC endpoints
+# VPC 终端节点
 #
-# Because the private tier has no NAT gateway, every AWS service a private
-# workload talks to must be reachable through an endpoint.
-#   * S3            -> Gateway endpoint (free), attached to public + private
-#                      route tables.
-#   * anything else -> opt-in Interface endpoints via var.interface_endpoint_services
+# 私网层没有 NAT 网关，所以私网工作负载要访问的每个 AWS 服务，
+# 都必须能通过终端节点到达。
+#   * S3       -> Gateway 端点（免费），挂在公网 + 三张私网路由表上。
+#   * 其他服务 -> 通过 var.interface_endpoint_services 按需开启 Interface 端点
 ###############################################################################
 
 data "aws_partition" "current" {}
@@ -33,10 +32,9 @@ data "aws_iam_policy_document" "s3_endpoint" {
       "s3:PutObject",
     ]
 
-    # Scope of the ENDPOINT policy. It is not the authorization boundary:
-    # IAM identity policies and S3 bucket policies still decide who may read
-    # or write which object. Restricting it to a single bucket here would
-    # silently break every other workload in the account.
+    # 这是「端点策略」的作用范围，它不是授权边界：
+    # 谁可以读写哪个对象，仍然由 IAM 身份策略和 S3 桶策略决定。
+    # 如果在这里收窄到单个桶，会让账户里其他工作负载的 S3 访问静默失败。
     resources = ["arn:${data.aws_partition.current.partition}:s3:::*"]
   }
 }

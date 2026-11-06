@@ -1,12 +1,12 @@
 ###############################################################################
-# Remote state
+# 远端 state
 #
-# Nothing here is committed with real values. Initialise with:
+# 这里不提交任何真实取值。初始化方式：
 #
 #   terraform init -backend-config=backend.hcl
 #
-# and copy backend.hcl.example to backend.hcl (git-ignored). For syntax-only
-# checks with no AWS account, use `terraform init -backend=false`.
+# 把 backend.hcl.example 复制成 backend.hcl（已被 git 忽略）。
+# 没有 AWS 账户时只做语法检查，可用 `terraform init -backend=false`。
 ###############################################################################
 
 terraform {

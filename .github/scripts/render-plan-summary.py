@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Render `terraform show -json` output as a Markdown plan summary.
+"""把 `terraform show -json` 的输出渲染成 Markdown 形式的 plan 摘要。
 
-The summary is used both as a sticky pull-request comment and as a GitHub
-Actions step summary. It intentionally shows counts and a bounded resource
-table rather than the full plan: the authoritative artifact is the `.tfplan`
-file, and the summary must stay under the comment size limit.
+这份摘要同时用作 PR 上的粘性评论和 GitHub Actions 的步骤摘要。它有意只展示
+变更计数和一段有长度上限的资源表格，而不是完整的 plan：权威产物是 `.tfplan`
+文件，而摘要必须控制在评论长度限制之内。
 
-Usage:
+用法:
     render-plan-summary.py --plan-json plan.json --environment prod \
         --commit "$GITHUB_SHA" --run-url "$RUN_URL" \
         --artifact terraform-plan-prod --output summary.md
@@ -20,7 +19,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-# Actions are reported by Terraform as a list. Only these shapes are meaningful.
+# Terraform 用列表表示动作，只有这几种组合是有意义的。
 ACTION_LABELS = {
     ("create",): "create",
     ("update",): "update",
@@ -52,7 +51,7 @@ def action_label(actions: list[str]) -> str:
     key = tuple(actions)
     if key in ACTION_LABELS:
         return ACTION_LABELS[key]
-    # Unknown shape: describe it rather than silently dropping the resource.
+    # 未知的组合直接描述出来，不要静默丢掉这个资源。
     return "+".join(actions) or "unknown"
 
 

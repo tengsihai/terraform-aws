@@ -44,7 +44,7 @@ runs:
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: ${{ inputs.terraform-version }}
-        # The wrapper masks real exit codes, which breaks -detailed-exitcode.
+        # wrapper 会吞掉真实退出码，导致 -detailed-exitcode 失效。
         terraform_wrapper: false
 
     - name: Assume role via GitHub OIDC

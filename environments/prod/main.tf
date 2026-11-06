@@ -1,5 +1,5 @@
 locals {
-  # Pinned per environment directory: env.tfvars cannot change it by accident.
+  # 每个环境目录固定自己的值：env.tfvars 无法意外改动它。
   environment = "prod"
 
   name_prefix = "${var.project}-${local.environment}"
@@ -11,8 +11,8 @@ locals {
     Repository  = "terraform-aws"
   }
 
-  # S3 bucket names are globally unique; account id + region make this
-  # reproducible without a random suffix.
+  # S3 桶名全局唯一；用账户 ID + 区域就能稳定复现，
+  # 不需要加随机后缀。
   log_bucket_name = "${local.name_prefix}-logs-${var.aws_account_id}-${var.aws_region}"
 }
 
@@ -24,8 +24,7 @@ module "logging" {
   bucket_name = local.log_bucket_name
   account_id  = var.aws_account_id
 
-  # prod keeps the maximum waiting period so an accidental key deletion is
-  # recoverable for 30 days.
+  # prod 用最长待删除窗口，误删密钥时有 30 天可恢复。
   kms_deletion_window_in_days = 30
 
   log_retention_days           = var.log_retention_days
@@ -63,7 +62,7 @@ module "vpc" {
 
   tags = local.common_tags
 
-  # The S3 flow-log destination requires the bucket policy (and its KMS grant)
-  # to exist before AWS validates the flow log configuration.
+  # S3 flow log 目标要求桶策略（以及对应的 KMS 授权）先存在，
+  # 否则 AWS 在校验 flow log 配置时会拒绝。
   depends_on = [module.logging]
 }

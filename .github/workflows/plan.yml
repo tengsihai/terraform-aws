@@ -1,10 +1,9 @@
 name: Terraform plan
 
-# Produces the plan artifact that a human reviews and that the apply workflow
-# applies verbatim. Runs on:
-#   * pull_request  -> plan posted as a sticky comment (review aid)
-#   * push to main  -> the canonical artifact an operator may apply
-#   * manual dispatch
+# 生成 plan 工件：人工评审它，apply 工作流原样执行它。触发场景：
+#   * pull_request  -> plan 以粘性评论的形式贴到 PR（评审辅助）
+#   * push to main  -> 产出操作员可以真正应用的权威工件
+#   * 手动触发
 
 on:
   pull_request:
@@ -29,9 +28,9 @@ env:
 jobs:
   plan:
     name: plan (${{ matrix.environment }})
-    # Fork pull requests get no OIDC token and no secrets. They still receive the
-    # credential-free checks from pr-checks.yml; a credentialed plan would only
-    # fail, so skip it explicitly instead of failing the check.
+    # fork 出来的 PR 拿不到 OIDC token，也拿不到任何 secret。它们仍然会跑
+    # pr-checks.yml 里那些无需凭据的检查；而需要凭据的 plan 对它们只会失败，
+    # 所以这里显式跳过，而不是让检查报错。
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -41,8 +40,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Scope is driven by the repo variable TF_ENVIRONMENTS (default ["dev"]),
-        # so environments that are not provisioned yet are not planned.
+        # 范围由仓库变量 TF_ENVIRONMENTS 决定（默认 ["dev"]），
+        # 尚未接入的环境因此不会被 plan。
         environment: ${{ fromJSON(vars.TF_ENVIRONMENTS || '["dev"]') }}
 
     steps:
@@ -148,8 +147,8 @@ jobs:
           cat "reports/${ENVIRONMENT}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload plan artifact
-        # Uploaded even on failure so the plan output is inspectable, but only a
-        # run with conclusion=success may be used by the apply workflow.
+        # 即使失败也上传，方便排查；但只有 conclusion=success 的 run
+        # 才允许被 apply 工作流使用。
         if: always()
         uses: actions/upload-artifact@v7
         with:

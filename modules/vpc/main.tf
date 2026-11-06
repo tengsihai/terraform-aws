@@ -1,13 +1,13 @@
 ###############################################################################
 # VPC
 #
-# Design contract (see docs/ARCHITECTURE.md):
-#   * three availability zones, one public and one private subnet per AZ
-#   * dual stack: IPv4 + AWS-generated /56 IPv6
-#   * NO NAT gateway and NO IPv4 default route in the private route tables.
-#     Private workloads reach AWS APIs through VPC endpoints (S3 gateway by
-#     default). IPv6 egress, when enabled, uses an egress-only internet gateway.
-#   * no security group accepts 0.0.0.0/0 or ::/0 ingress
+# 设计约定（详见 docs/ARCHITECTURE.md）：
+#   * 三个可用区，每个 AZ 一对公网 / 私网子网
+#   * 双栈：IPv4 + AWS 自动分配的 /56 IPv6
+#   * 不创建 NAT 网关，私网路由表里也没有 IPv4 默认路由。
+#     私网工作负载通过 VPC 终端节点访问 AWS API（默认是 S3 网关端点）。
+#     启用 IPv6 时，出网走 egress-only internet gateway（只出不进）。
+#   * 任何安全组都不接受 0.0.0.0/0 或 ::/0 入站
 ###############################################################################
 
 resource "aws_vpc" "this" {
@@ -26,8 +26,8 @@ resource "aws_internet_gateway" "this" {
   tags = merge(local.tags, { Name = "${var.name}-igw" })
 }
 
-# IPv6-only outbound path for private subnets. This is the IPv6 counterpart of a
-# NAT gateway and is free of charge; inbound connections cannot be initiated.
+# 私网子网的 IPv6 出网通道。相当于 NAT 网关的 IPv6 版本，免费，
+# 且外部无法主动发起入站连接。
 resource "aws_egress_only_internet_gateway" "this" {
   count = var.ipv6_enabled ? 1 : 0
 

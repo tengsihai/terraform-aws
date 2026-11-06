@@ -1,11 +1,10 @@
 ###############################################################################
-# Route tables
+# 路由表
 #
-# Public: one shared route table, 0.0.0.0/0 and ::/0 -> internet gateway.
-# Private: one route table PER AZ, ::/0 -> egress-only internet gateway.
-#          There is deliberately NO 0.0.0.0/0 route: this VPC has no NAT
-#          gateway, so private IPv4 traffic cannot leave the VPC. AWS API
-#          access goes through VPC endpoints instead.
+# 公网：一张共享路由表，0.0.0.0/0 和 ::/0 指向 internet gateway。
+# 私网：每个 AZ 一张路由表，::/0 指向 egress-only internet gateway。
+#       这里刻意没有 0.0.0.0/0 路由：本 VPC 不建 NAT 网关，
+#       私网的 IPv4 流量无法离开 VPC。访问 AWS API 走 VPC 终端节点。
 ###############################################################################
 
 resource "aws_route_table" "public" {

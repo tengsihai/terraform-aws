@@ -1,16 +1,14 @@
 name: Terraform apply
 
-# Applies the plan artifact produced on main. The merge is the approval:
+# 应用 main 上产出的 plan 工件。合并本身即审批：
 #
-#   PR -> required status checks -> human merge -> plan on main -> apply
+#   PR -> 必须通过的检查 -> 人工合并 -> main 上出 plan -> apply
 #
-# The auto path has no separate approval step. Staging and production MUST
-# re-enable required reviewers on their GitHub Environment before they are
-# added to TF_ENVIRONMENTS.
+# 自动路径没有额外的审批步骤。staging 和 production 在加入 TF_ENVIRONMENTS
+# 之前，必须先把 required reviewers 在对应的 GitHub Environment 上加回来。
 #
-# There is no workflow_dispatch here on purpose: to re-apply after a failure,
-# re-run the failed apply job (it applies the same saved plan, and Terraform's
-# staleness check rejects it if the state moved underneath it).
+# 这里刻意不提供 workflow_dispatch：失败后要重放，直接重跑失败的 apply job
+# （它应用的是同一份 plan；如果底层 state 变了，Terraform 的陈旧检查会拒绝）。
 
 on:
   workflow_run:
@@ -31,25 +29,23 @@ env:
 jobs:
   apply:
     name: apply (${{ matrix.environment }})
-    # Only apply a plan that was produced on main by a push, i.e. a merge.
-    # Plan runs from pull requests (head_branch = feature branch) and manual
-    # plan dispatches are ignored here.
+    # 只应用「main 上由 push（即一次合并）产生的 plan」。
+    # PR 产生的 plan（head_branch 是功能分支）和手动触发的 plan 在这里一律忽略。
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # Supplies the per-environment apply role ARN; add required reviewers here
-    # when an environment must be gated separately from the merge.
+    # 这里提供该环境的 apply 角色 ARN；如果某个环境需要独立于合并再卡一道，
+    # 就在这个 Environment 上加 required reviewers。
     environment: ${{ matrix.environment }}
     strategy:
       fail-fast: false
       matrix:
         environment: ${{ fromJSON(vars.TF_ENVIRONMENTS || '["dev"]') }}
 
-    # Never cancel an apply halfway through: a partially applied plan is worse
-    # than a queued one.
+    # 绝不取消进行中的 apply：半途而废的 apply 比排队等待糟糕得多。
     concurrency:
       group: terraform-apply-${{ matrix.environment }}
       cancel-in-progress: false
@@ -167,9 +163,9 @@ jobs:
             exit 1
           fi
 
-          # `applyable` is false for a plan with NO CHANGES, which is the normal
-          # outcome of a merge that does not touch infrastructure. `complete`
-          # and `errored` are what separate a clean no-op from a broken plan.
+          # 「没有变更」的 plan 里 applyable 就是 false，这是不触及基础设施的
+          # 合并的正常结果。判断 plan 是否健康要看 complete 和 errored，
+          # 它们才能区分「干净的空变更」和「坏掉的 plan」。
           if [ "$(jq -r '.complete // false' plan.json)" != "true" ] \
             || [ "$(jq -r '.errored // false' plan.json)" = "true" ]; then
             echo "::error::plan is incomplete or errored; refusing to apply"
@@ -218,8 +214,8 @@ jobs:
           PLAN_FILE: ${{ runner.temp }}/plan/tfplan
         run: |
           set -euo pipefail
-          # Applies the reviewed plan artifact. It does not re-plan, so what the
-          # merge approved is exactly what runs.
+          # 应用已评审的 plan 工件。这里不会重新 plan，
+          # 所以合并时批准的内容就是实际执行的内容。
           terraform -chdir="environments/${ENVIRONMENT}" apply \
             -input=false \
             -no-color \

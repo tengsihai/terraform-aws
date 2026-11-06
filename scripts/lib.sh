@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# Shared helpers for the scripts in this directory.
+# 本目录下各脚本共用的辅助函数。
 #
-# Everything here is read-only: no script in this repository may run
-# `terraform apply` or `terraform destroy`. See docs/ARCHITECTURE.md.
+# 这里的一切都是只读的：本仓库的任何脚本都不得执行
+# `terraform apply` 或 `terraform destroy`。参见 docs/ARCHITECTURE.md。
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Used by the scripts that source this file (plan.sh, scan.sh), never by lib.sh.
+# 供 source 本文件的脚本使用（plan.sh、scan.sh），lib.sh 自身不直接用到。
 # shellcheck disable=SC2034
 REPORTS_DIR="${ROOT_DIR}/reports"
 ALL_ENVIRONMENTS=(dev staging prod)
@@ -47,7 +47,7 @@ find_checkov() {
   fi
 }
 
-# True when the AWS SDK can find usable credentials.
+# AWS SDK 能拿到可用凭证时返回真。
 has_aws_credentials() {
   if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
     return 0
@@ -55,9 +55,9 @@ has_aws_credentials() {
   if [ -n "${AWS_PROFILE:-}" ] || [ -f "${HOME}/.aws/credentials" ]; then
     return 0
   fi
-  # An AWS CLI "login" session stores no credentials file, so the checks above
-  # miss it and plan.sh would silently fall back to offline mode. Ask the CLI
-  # whether it can export a session instead.
+  # AWS CLI 的 "login" 会话不写凭证文件，上面的检查会漏掉它，
+  # 导致 plan.sh 静默退化成离线模式。这里改成直接问 CLI
+  # 能不能导出一份会话凭证。
   if command -v aws >/dev/null 2>&1 \
     && aws configure export-credentials --format env >/dev/null 2>&1; then
     return 0
@@ -65,11 +65,10 @@ has_aws_credentials() {
   return 1
 }
 
-# Terraform's AWS SDK reads ~/.aws/credentials and ~/.aws/config, but the
-# modern AWS CLI "login" session stores credentials in a format the SDK cannot
-# read (aws configure list shows them as type "login"). Export the current
-# session into the environment so local runs work without copying long-lived
-# keys around.
+# Terraform 的 AWS SDK 会读 ~/.aws/credentials 和 ~/.aws/config，但新版
+# AWS CLI 的 "login" 会话存的格式 SDK 读不懂（aws configure list 里
+# credential type 显示为 login）。把当前会话导出到环境变量，
+# 这样本地运行不必到处复制长期密钥。
 ensure_terraform_credentials() {
   if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
     return 0
@@ -80,7 +79,7 @@ ensure_terraform_credentials() {
   fi
 }
 
-# Rejects any environment name that is not one of the three managed roots.
+# 拒绝三个受管环境之外的任何环境名。
 validate_environment_name() {
   local env="$1"
   for known in "${ALL_ENVIRONMENTS[@]}"; do
@@ -89,7 +88,7 @@ validate_environment_name() {
   die "unknown environment '${env}'. Expected one of: ${ALL_ENVIRONMENTS[*]}"
 }
 
-# Hard block on the two commands that change real infrastructure.
+# 硬性拦截两个会改变真实基础设施的命令。
 refuse_mutation() {
   cat >&2 <<'EOF'
 ERROR: applying changes is intentionally not automated.

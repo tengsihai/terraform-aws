@@ -1,7 +1,6 @@
 name: PR checks
 
-# Fast, credential-free checks. This workflow never talks to AWS, so it runs on
-# fork pull requests too.
+# 快速的、无需凭据的检查。这个工作流从不访问 AWS，所以 fork 出来的 PR 也会跑。
 
 on:
   pull_request:
@@ -71,8 +70,7 @@ jobs:
           cache: true
 
       - name: Init tflint plugins
-        # The token avoids anonymous GitHub API rate limits when plugins are
-        # downloaded from their release pages.
+        # 带上 token 可以避免从 release 页面下载插件时撞上 GitHub API 的匿名限流。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: tflint --init
@@ -96,8 +94,8 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v7
         with:
-          # actionlint v1.7.12 requires Go >= 1.25. setup-go pins
-          # GOTOOLCHAIN=local, so the toolchain cannot upgrade itself.
+          # actionlint v1.7.12 要求 Go >= 1.25。setup-go 会设置
+          # GOTOOLCHAIN=local，工具链无法自行升级。
           go-version: "1.25"
           cache: false
 

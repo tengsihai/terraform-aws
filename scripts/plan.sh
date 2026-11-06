@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Produces a reviewable plan for one or more environments.
+# 为一个或多个环境生成可评审的 plan。
 #
-#   scripts/plan.sh                 # every environment
-#   scripts/plan.sh prod            # one environment
-#   scripts/plan.sh --offline dev   # no AWS account required
+#   scripts/plan.sh                 # 全部环境
+#   scripts/plan.sh prod            # 只做单个环境
+#   scripts/plan.sh --offline dev   # 不需要 AWS 账户
 #
-# This script NEVER applies anything. The plan files it writes are inputs to a
-# human approval step, not to automation.
+# 本脚本从不执行任何 apply。它产出的 plan 文件是人工审批环节的输入，
+# 不是自动化的输入。
 
 set -euo pipefail
 # shellcheck source=lib.sh source-path=SCRIPTDIR
@@ -79,8 +79,8 @@ cleanup_env() {
   rm -f "${ROOT_DIR}/environments/$1/backend_override.tf"
 }
 
-# Remove any temporary backend override even when a plan fails midway.
-# (bash 3.2 on macOS: no empty-array expansion under `set -u`, hence the guard)
+# 即使 plan 中途失败，也要清掉临时的后端 override。
+# （macOS 自带 bash 3.2，set -u 下不能展开空数组，所以这里用循环兜住）
 cleanup_all() {
   for e in "${REQUESTED[@]}"; do
     cleanup_env "${e}"
@@ -103,10 +103,10 @@ for env in "${REQUESTED[@]}"; do
   log "planning ${env} (mode: ${MODE})"
 
   if [ "${MODE}" = "offline" ]; then
-    # A local backend override lets `terraform plan` run against no remote state
-    # without editing the committed backend.tf. Removed again below.
-    # -reconfigure is required because the working directory may already be
-    # initialised against the real S3 backend; offline planning must ignore it.
+    # 用本地的后端 override，让 `terraform plan` 不去碰远端 state，
+    # 同时也不必修改已提交的 backend.tf。用完在下面删掉。
+    # 必须带 -reconfigure：工作目录可能已经初始化成真实的 S3 后端，
+    # 离线 plan 要忽略它。
     cat >"${ROOT_DIR}/${env_dir}/backend_override.tf" <<'EOF'
 terraform {
   backend "local" {}
@@ -118,7 +118,7 @@ EOF
     [ -f "${ROOT_DIR}/${env_dir}/backend.hcl" ] \
       || die "environments/${env}/backend.hcl missing. Copy backend.hcl.example and fill it in."
 
-    # The SDK cannot see AWS CLI "login" sessions; export the session credentials.
+    # SDK 看不见 AWS CLI 的 "login" 会话，先把会话凭证导出。
     ensure_terraform_credentials
 
     if command -v aws >/dev/null 2>&1; then

@@ -11,7 +11,7 @@ updates:
       github-actions:
         patterns: ["*"]
 
-  # One entry per Terraform root/module: Dependabot scopes by directory.
+  # Terraform 按目录管理，每个根目录/模块都要单独列一条。
   - package-ecosystem: terraform
     directory: /modules/vpc
     schedule:

@@ -1,20 +1,20 @@
 ###############################################################################
-# Encrypted S3 log archive
+# 加密的 S3 日志归档桶
 #
-# Every control below is deliberate:
-#   * SSE-KMS with a customer-managed, rotating key
-#   * versioning + noncurrent version expiry (protects against overwrite/delete)
-#   * Block Public Access, all four flags, plus BucketOwnerEnforced ownership
-#   * bucket policy denying any non-TLS request
-#   * server access logging on the bucket itself
-#   * lifecycle expiry so the bucket cannot grow unbounded
+# 下面每一项控制都是有意的：
+#   * SSE-KMS，使用客户托管且自动轮转的密钥
+#   * 版本控制 + 非当前版本过期（防止覆盖和删除）
+#   * Block Public Access 四项全开，加上 BucketOwnerEnforced 所有权
+#   * 桶策略拒绝任何非 TLS 请求
+#   * 桶自身开启服务端访问日志
+#   * 生命周期过期，避免桶无限增长
 ###############################################################################
 
 locals {
   tags = merge(var.tags, {
     "terraform-module" = "modules/logging-s3"
-    # See modules/vpc/locals.tf: AWS treats tag keys case-insensitively, so a
-    # second "environment" spelling makes IAM reject the request.
+    # 参见 modules/vpc/locals.tf：AWS 的 tag key 是大小写不敏感的，
+    # 再加一个小写 "environment" 会让 IAM 拒绝整个请求。
     "Environment" = var.environment
   })
 }
@@ -87,7 +87,7 @@ resource "aws_kms_alias" "logs" {
 }
 
 ###############################################################################
-# Bucket
+# 桶
 ###############################################################################
 
 resource "aws_s3_bucket" "logs" {
@@ -138,8 +138,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "logs" {
   }
 }
 
-# Server access logging targets the bucket itself: the log archive is the one
-# bucket in this account whose access trail must survive independently.
+# 服务端访问日志写到桶自身：日志归档桶是这个账户里唯一一个
+# 访问痕迹必须能独立存活下来的桶。
 resource "aws_s3_bucket_logging" "logs" {
   bucket = aws_s3_bucket.logs.id
 
@@ -242,7 +242,7 @@ resource "aws_s3_bucket_policy" "logs" {
   bucket = aws_s3_bucket.logs.id
   policy = data.aws_iam_policy_document.bucket.json
 
-  # The policy must not be applied before public access is blocked, otherwise a
-  # permissive policy could briefly be live.
+  # 策略不能在公共访问被阻断之前生效，
+  # 否则一个宽松的策略会有短暂的生效窗口。
   depends_on = [aws_s3_bucket_public_access_block.logs]
 }
