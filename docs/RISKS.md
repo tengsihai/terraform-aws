@@ -47,7 +47,7 @@
 - **场景**：变更绕过人工把关直接落到真实账户。
 - **影响**：生产网络被创建/修改/删除。VPC 删除会连带删除其下所有资源。
 - **人工把关点**：**合并 PR**。main 上的 ruleset `protect-main` 禁止直接 push，
-  要求 4 项 status checks 全绿；合并这个动作就是审批。
+  要求全部 status checks 全绿；合并这个动作就是审批。
 - **缓解**：
   - 本地：`scripts/lib.sh` 的 `refuse_mutation()` 硬拒绝，`Makefile` 的 `apply`/`destroy`
     目标只打印说明并 `exit 1`；
@@ -67,7 +67,7 @@
 - **影响**：一次合并立即改变真实基础设施；plan 与 apply 之间没有人再看过一眼。
 - **缓解**：
   - PR 上有 plan 摘要粘性评论，评审时能看到「会创建/修改/删除什么」；
-  - PR 必须过 4 项检查才允许合并；
+  - PR 必须过全部 required status checks 才允许合并；
   - destructive 变更在摘要里有醒目告警（`> [!WARNING]`）；
   - `TF_ENVIRONMENTS` 只列已确认要自动部署的环境。
 - **决策**：单人仓库接受；接入 staging/prod 时必须恢复 required reviewers（R-01）。

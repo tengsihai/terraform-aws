@@ -198,7 +198,7 @@ make apply           # 故意报错退出，见下方审批流程
 
 **合并 PR 就是审批。** 变更只有一条路径：
 
-1. 提交 PR → 4 项检查必须全绿（`main` 有 ruleset，不允许直接 push）。
+1. 提交 PR → 全部 required status checks 必须全绿（`main` 有 ruleset，不允许直接 push）。
 2. 由人合并。
 3. 合并后自动：`plan.yml` 在 main 上出权威 plan 工件 → `apply.yml` 被该 plan 完成自动触发。
 4. apply 前机器校验：plan run 必须成功、必须是 main 上 push 产生的、来自 `plan.yml`、
