@@ -90,11 +90,18 @@ resource "aws_db_instance" "this" {
   skip_final_snapshot        = var.skip_final_snapshot
   final_snapshot_identifier  = var.skip_final_snapshot ? null : "${var.name}-mysql-final"
 
-  copy_tags_to_snapshot                 = true
-  performance_insights_enabled          = true
-  performance_insights_kms_key_id       = var.kms_key_arn
-  performance_insights_retention_period = 7
-  enabled_cloudwatch_logs_exports       = ["error", "slowquery"]
+  copy_tags_to_snapshot           = true
+  enabled_cloudwatch_logs_exports = ["error", "slowquery"]
+
+  # Performance Insights 默认关闭：db.t4g.micro 不支持，开启会让 AWS 返回
+  # InvalidParameterCombination（"Performance Insights not supported for this
+  # configuration"）。实例类升级到支持 PI 的型号后再通过变量打开。
+  #checkov:skip=CKV_AWS_129: db.t4g.micro 不支持 Performance Insights；需要 PI 时先换更大的实例类。
+  #checkov:skip=CKV_AWS_354: PI 未启用；启用后应指定 performance_insights_kms_key_id。
+  #checkov:skip=CKV_AWS_353: 同 CKV_AWS_129 —— db.t4g.micro 不支持 Performance Insights。
+  performance_insights_enabled          = var.performance_insights_enabled
+  performance_insights_retention_period = var.performance_insights_enabled ? var.performance_insights_retention_period : null
+  performance_insights_kms_key_id       = var.performance_insights_enabled ? var.kms_key_arn : null
 
   apply_immediately = var.apply_immediately
 

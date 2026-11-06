@@ -46,6 +46,13 @@ run "single_az_private_mysql" {
     condition     = aws_db_instance.this.backup_retention_period >= 1
     error_message = "automated backups must be enabled."
   }
+
+  # db.t4g.micro 不支持 Performance Insights，开启会触发
+  # InvalidParameterCombination，所以默认必须关闭。
+  assert {
+    condition     = aws_db_instance.this.performance_insights_enabled == false
+    error_message = "Performance Insights must stay off for db.t4g.micro."
+  }
 }
 
 run "ingress_is_security_group_scoped" {

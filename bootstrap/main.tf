@@ -526,6 +526,8 @@ data "aws_iam_policy_document" "apply_boundary" {
   #checkov:skip=CKV_AWS_111: 边界的 Allow 只是上限，实际写权限仍受 apply_mutations 身份策略的约束。
   #checkov:skip=CKV_AWS_109: 见 CKV_AWS_111；IAM 提权动作已在 DenyIdentityEscalation 中显式拒绝。
   #checkov:skip=CKV_AWS_108: 见 CKV_AWS_111。
+  #checkov:skip=CKV_AWS_107: DenyOutsideDeployRegion 是 Deny 语句；not_action 只用来限定「这条拒绝作用于哪些动作」，不是在授予凭据访问。
+  #checkov:skip=CKV_AWS_110: 同 CKV_AWS_107；Allow 语句只有服务白名单，提权动作由 DenyIdentityEscalation 显式拒绝。
 
   statement {
     sid    = "AllowedServices"

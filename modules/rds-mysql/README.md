@@ -52,7 +52,9 @@ module "rds" {
 | `deletion_protection` | `bool` | `false` | |
 | `skip_final_snapshot` | `bool` | `true` | |
 | `apply_immediately` | `bool` | `false` | |
-| `kms_key_arn` | `string` | `null` | storage/Performance Insights CMK; `null` uses the AWS-managed `aws/rds` key |
+| `kms_key_arn` | `string` | `null` | storage CMK; `null` uses the AWS-managed `aws/rds` key |
+| `performance_insights_enabled` | `bool` | `false` | off: unsupported on `db.t4g.micro` |
+| `performance_insights_retention_period` | `number` | `7` | 7 or 731 |
 | `tags` | `map(string)` | `{}` | |
 
 ## Outputs
@@ -72,5 +74,8 @@ The password itself is never an output and never stored in Terraform state.
 - `multi_az` is fixed to `false` because the design requires single-AZ
   (`CKV_AWS_157` is suppressed inline). Change the module if that requirement
   changes.
-- Performance Insights is on with the free 7-day retention; `error` and
-  `slowquery` logs are exported to CloudWatch.
+- Performance Insights is **off by default**: `db.t4g.micro` does not support it
+  and AWS rejects the combination with `InvalidParameterCombination`. Switch to
+  a larger instance class first, then set `performance_insights_enabled = true`
+  (retention 7 = free tier, 731 = paid).
+- `error` and `slowquery` logs are exported to CloudWatch.
