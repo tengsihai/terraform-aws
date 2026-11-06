@@ -37,6 +37,11 @@
 | R-28 | 开发人员 IAM 策略需要单独分发 | 中 | 已接受（策略已输出） |
 | R-29 | RDS 单 AZ，无跨 AZ 故障切换 | 中 | 已接受 |
 | R-30 | 跳板机出站全部允许 | 低 | 已接受 |
+| R-31 | CloudFront 未启用 WAF | 中 | 已接受 |
+| R-32 | CloudFront 标准访问日志未启用 | 中 | 已接受（源站有 S3 日志） |
+| R-33 | CloudFront 单源站，无 origin failover | 低 | 已接受 |
+| R-34 | 静态站点未使用自定义域名 / ACM 证书 | 低 | 已接受 |
+| R-35 | CloudFront 未启用地理限制 | 低 | 已接受（公开静态内容） |
 
 ---
 
@@ -227,7 +232,7 @@ rm -f /tmp/state-bucket-policy.json
 
 ### R-05 未启用 Interface 端点导致 SSM/ECR 不可用
 
-- **场景**：`interface_endpoint_services` 默认为空。
+- **场景**：`interface_endpoint_services` 默认为空（目前只有 dev 开了 `secretsmanager`，ssm/ecr 仍未开）。
 - **影响**：私网实例无法用 Session Manager 登录，无法从 ECR 拉镜像——大多数容器化工作负载会直接起不来。
 - **缓解**：按需打开 `["ssm","ssmmessages","ec2messages","ecr.api","ecr.dkr","logs"]`；
   成本 = 端点数量 × AZ 数 × 小时单价 + 数据处理费。上线前需成本确认。
@@ -375,6 +380,31 @@ rm -f /tmp/state-bucket-policy.json
 - **决策**：需求要求单 AZ，接受可用性取舍。需要 HA 时改模块为 `multi_az = true`。
 - **状态**：已接受。
 
+### R-31 CloudFront 未启用 WAF
+
+- **场景**：`cloudfront-s3` 模块只分发私有 S3 桶里的静态对象，没有挂 WAFv2 Web ACL。
+- **影响**：边缘层没有托管的常见规则集和 Log4j/AMR 规则；恶意请求会直接落到
+  CloudFront 缓存或源站。静态对象没有请求解析面，实际可利用性低，但缺少一层通用过滤。
+- **原因**：CloudFront 作用域的 WAFv2 Web ACL 必须创建在 `us-east-1`，
+  本模块刻意不引入第二个 provider；WAF 还有每月固定费用。
+- **缓解**：源站桶私有，只允许本分发通过 OAC 读取；查看器只能走 TLS 1.2+；
+  CloudFront 边缘缓存吸收大部分流量；源站访问由 S3 服务端访问日志记录。
+- **状态**：已接受。需要 WAF 时在环境根目录加 `us-east-1` 别名 provider，
+  由模块接收 web ACL ARN 并挂到 `web_acl_id`。
+
+### R-32 CloudFront 标准访问日志未启用
+
+- **场景**：`aws_cloudfront_distribution` 没有配置 `logging_config`。
+- **影响**：边缘侧的查看器请求（客户端 IP、URI、状态码、缓存命中）不会写入日志；
+  只有到达源站的请求会出现在 S3 服务端访问日志里。
+- **原因**：CloudFront 标准日志是 ACL 模式，目标桶必须允许
+  `log-delivery-write` 之类的 ACL 授权，与日志桶的 `BucketOwnerEnforced` 冲突；
+  跨区域日志桶还需要额外配置。
+- **缓解**：源站桶开启 S3 服务端访问日志并写入加密日志桶；CloudFront 指标
+  （请求数、4xx/5xx、缓存命中率）仍可在 CloudWatch 查看。
+- **状态**：已接受。需要边缘级审计时，改用 CloudFront 日志 v2 / 实时日志
+  （Kinesis Data Streams），不要回退到 ACL 模式。
+
 ---
 
 ## 低等级
@@ -387,6 +417,9 @@ rm -f /tmp/state-bucket-policy.json
 | R-19 | provider 版本为区间约束 | `>= 6.0.0, < 7.0.0`，实际版本由 `.terraform.lock.hcl` 锁定；lock 文件必须入库 |
 | R-20 | 未强制标签合规 | 已提供 `make check-tags`（`scripts/check-tags.py`）并接入 CI：基于离线 plan JSON，要求每个可打标签资源带 `Project` / `Environment` / `ManagedBy` / `Repository`；SCP/Config 级别的强制仍在组织层 |
 | R-30 | 跳板机出站全部允许 | 需求要求；实例无入站规则，唯一访问路径是 SSM |
+| R-33 | CloudFront 单源站，无 origin failover | 静态内容靠 S3 版本控制和同区域多 AZ 持久性恢复；跨区域源站属于 DR 决策，见 R-06 |
+| R-34 | 静态站点未使用自定义域名 / ACM 证书 | 使用 CloudFront 默认 `*.cloudfront.net` 证书，因此不需要 `us-east-1` 的 ACM；需要品牌域名时再补 |
+| R-35 | CloudFront 未启用地理限制 | 站点是公开静态内容，有意面向全球；`geo_restriction = none` 是显式选择 |
 
 ---
 

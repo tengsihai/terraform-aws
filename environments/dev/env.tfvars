@@ -25,7 +25,10 @@ map_public_ip_on_launch = false
 
 # 跳板机在公有子网，SSM Agent 的 443 出站经 IGW 直连公网 SSM 端点，
 # 因此不创建 ssm / ec2messages / ssmmessages Interface 端点（省掉按 AZ-hour 的费用）。
-interface_endpoint_services = []
+#
+# 私网的 Lambda 没有公网出口，读 RDS 主用户密码必须走 Secrets Manager 的
+# Interface 端点。接口型端点按 AZ-hour 计费，先只在 dev 开一档打通链路。
+interface_endpoint_services = ["secretsmanager"]
 
 flow_logs_retention_in_days = 30
 log_retention_days          = 90

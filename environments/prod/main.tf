@@ -14,6 +14,9 @@ locals {
   # S3 桶名全局唯一；用账户 ID + 区域就能稳定复现，
   # 不需要加随机后缀。
   log_bucket_name = "${local.name_prefix}-logs-${var.aws_account_id}-${var.aws_region}"
+
+  # 静态站点源站桶。和数据桶一样，桶名用账户 ID + 区域稳定复现。
+  site_bucket_name = "${local.name_prefix}-site-${var.aws_account_id}-${var.aws_region}"
 }
 
 module "logging" {
@@ -34,6 +37,30 @@ module "logging" {
   tags = local.common_tags
 }
 
+module "site" {
+  source = "../../modules/cloudfront-s3"
+
+  name        = local.name_prefix
+  environment = local.environment
+  account_id  = var.aws_account_id
+
+  bucket_name   = local.site_bucket_name
+  log_bucket_id = module.logging.bucket_id
+
+  # prod 用最长待删除窗口，误删密钥时有 30 天可恢复。
+  kms_deletion_window_in_days = 30
+
+  default_root_object = var.site_default_root_object
+  spa_mode            = var.site_spa_mode
+  price_class         = var.cloudfront_price_class
+  force_destroy       = var.site_force_destroy
+
+  tags = local.common_tags
+
+  # 日志桶的桶策略必须先存在，S3 才能接受访问日志投递配置。
+  depends_on = [module.logging]
+}
+
 module "vpc" {
   source = "../../modules/vpc"
 
@@ -52,7 +79,32 @@ module "vpc" {
   private_subnet_ipv6_netnums = var.private_subnet_ipv6_netnums
   map_public_ip_on_launch     = var.map_public_ip_on_launch
   interface_endpoint_services = var.interface_endpoint_services
-  additional_security_groups  = var.additional_security_groups
+
+  # Lambda 是纯客户端：没有任何入站规则。两条出站分别用于连 MySQL 和
+  # Secrets Manager 的 Interface 端点，目标都限定在本环境的 VPC 网段内。
+  # 用 merge 而不是直接覆盖，保留 tfvars 里按需追加的其他安全组。
+  additional_security_groups = merge(var.additional_security_groups, {
+    lambda = {
+      description = "Egress-only group for the Lambda workload: MySQL and Secrets Manager. No ingress."
+      ingress     = []
+      egress = [
+        {
+          description = "MySQL to the RDS instance inside this VPC."
+          from_port   = 3306
+          to_port     = 3306
+          protocol    = "tcp"
+          cidr_blocks = [var.vpc_cidr]
+        },
+        {
+          description = "HTTPS to the Secrets Manager interface endpoint inside this VPC."
+          from_port   = 443
+          to_port     = 443
+          protocol    = "tcp"
+          cidr_blocks = [var.vpc_cidr]
+        },
+      ]
+    }
+  })
 
   flow_logs_enabled           = true
   flow_logs_traffic_type      = "ALL"
@@ -102,8 +154,12 @@ module "rds" {
   db_name         = var.db_name
   master_username = var.db_master_username
 
-  # 入站只允许跳板机那一张安全组；单 AZ、公网不可达由模块内部固定。
-  allowed_security_group_ids = [module.bastion.security_group_id]
+  # 入站只允许显式列出的两张安全组：跳板机（人工运维）和 Lambda（应用）。
+  # 单 AZ、公网不可达由模块内部固定。
+  allowed_security_group_ids = [
+    module.bastion.security_group_id,
+    module.vpc.additional_security_group_ids["lambda"],
+  ]
 
   deletion_protection = var.db_deletion_protection
   skip_final_snapshot = var.db_skip_final_snapshot
