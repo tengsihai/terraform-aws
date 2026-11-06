@@ -13,7 +13,9 @@
 locals {
   tags = merge(var.tags, {
     "terraform-module" = "modules/logging-s3"
-    environment        = var.environment
+    # See modules/vpc/locals.tf: AWS treats tag keys case-insensitively, so a
+    # second "environment" spelling makes IAM reject the request.
+    "Environment" = var.environment
   })
 }
 

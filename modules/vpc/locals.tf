@@ -1,7 +1,11 @@
 locals {
   tags = merge(var.tags, {
     "terraform-module" = "modules/vpc"
-    environment        = var.environment
+    # Capitalised to merge with the Environment tag the environment root supplies
+    # through var.tags / provider default_tags. AWS tag keys are case-insensitive
+    # in several services (IAM rejects a map holding both "Environment" and
+    # "environment"), so the module must not introduce a second spelling.
+    "Environment" = var.environment
   })
 
   public_subnet_keys  = [for i in range(length(var.public_subnet_cidrs)) : "public-${i}"]
