@@ -1,6 +1,7 @@
 # terraform-aws — 三可用区 VPC 网络基础设施
 
-标准 Terraform 模块仓库：可复用的 `vpc` / `logging-s3` 模块 + `dev` / `staging` / `prod` 三个环境根目录。
+标准 Terraform 模块仓库：可复用的 `vpc` / `logging-s3` / `rds-mysql` / `bastion` 模块 +
+`dev` / `staging` / `prod` 三个环境根目录。
 
 设计约束（硬性）：
 
@@ -10,6 +11,9 @@
 - **不创建 NAT 网关**，私网路由表没有 `0.0.0.0/0` 路由
 - **任何安全组都不允许 `0.0.0.0/0` 或 `::/0` 入站**（变量校验层强制拒绝）
 - **S3 日志桶开启服务端加密**（SSE-KMS + 轮转 CMK）
+- **RDS 只在私网子网、单 AZ、公网不可达**，主用户密码由 Secrets Manager 托管和轮转
+- **跳板机是纯 ASG（desired=0）**，放在公有子网，经 IGW 直连 SSM 公网端点；
+  仅通过 SSM 端口转发访问，无 SSH、无密钥对、无 EIP、无入站规则
 
 > 本地脚本不提供 apply 入口。唯一的执行路径是 GitHub Actions 的 `apply.yml`：
 > 人工触发 → GitHub Environment 审批 → 执行已评审的 plan 文件。详见 [docs/CI-CD.md](docs/CI-CD.md)。
@@ -44,7 +48,15 @@
 │   │   ├── flow-logs.tf           #   CloudWatch / S3 flow logs
 │   │   ├── variables.tf / outputs.tf / versions.tf
 │   │   └── README.md
-│   └── logging-s3/                # 加密日志桶模块
+│   ├── logging-s3/                # 加密日志桶模块
+│   ├── rds-mysql/                 # 单 AZ MySQL + Secrets Manager 密码
+│   │   ├── main.tf                #   子网组 / 安全组 / mysql 入站规则 / db_instance
+│   │   ├── variables.tf / outputs.tf / versions.tf
+│   │   └── README.md
+│   └── bastion/                   # 公有子网 SSM 跳板机（纯 ASG，desired=0）
+│       ├── main.tf                #   SG / IAM / Launch Template / ASG / 开发人员策略
+│       ├── variables.tf / outputs.tf / versions.tf
+│       └── README.md
 ├── environments/
 │   ├── dev/                       # 10.10.0.0/16
 │   ├── staging/                   # 10.20.0.0/16
@@ -79,15 +91,96 @@
 | S3 日志桶保留 | 90 天 | 180 天 | 365 天 |
 | flow logs 投递到 S3 | 否 | 是 | 是 |
 | KMS 待删除窗口 | 7 天 | 30 天 | 30 天 |
-| 预期 plan | 42 add | 43 add | 43 add |
+| RDS 实例类 | db.t4g.micro（单 AZ） | 同左 | 同左 |
+| RDS 删除保护 | 否 | 是 | 是 |
+| RDS 最终快照 | 跳过 | 保留 | 保留 |
+| 跳板机实例类 | t4g.micro | 同左 | 同左 |
+| 跳板机容量 | ASG min 0 / max 1 / desired 0 | 同左 | 同左 |
+| 跳板机登录方式 | 公有子网 + IGW 直连 SSM 公网端点（无 SSH、无密钥对、无 EIP） | 同左 | 同左 |
+| SSM Interface 端点 | 不创建 | 不创建 | 不创建 |
+| 预期 plan | 53 add | 54 add | 54 add |
+
+## 数据库与跳板机
+
+```
+本地 DBeaver/Navicat ── SSM 端口转发 ──► 跳板机 ASG（t4g.micro，公有子网，0~1 台）
+                                              │   443 出站经 IGW 直连 SSM 公网端点
+                                              │ TCP/3306
+                                              ▼
+                                          RDS MySQL 8.4 (db.t4g.micro, 单 AZ, 私网子网)
+```
+
+- **RDS**：`manage_master_user_password = true`，Terraform 不接触明文密码。
+  Security Group 只有一条来自跳板机安全组的 3306 入站规则，没有出站规则；
+  `publicly_accessible = false`、单 AZ。
+- **跳板机**：纯 ASG 方案。`min=0 / max=1 / desired=0`，空闲时没有实例，
+  不产生计算和 EBS 费用。启动模板为 AL2023 arm64 + `t4g.micro`，
+  根卷加密且 `delete_on_termination = true`。
+- **公有子网 + 自动分配公网 IPv4（不绑 EIP）**：SSM Agent 的 443 出站经 IGW
+  直连 SSM 公网端点，因此**不创建** ssm / ec2messages / ssmmessages Interface 端点。
+- **没有 SSH、密钥对**：安全组零入站规则，唯一访问路径是 SSM Session Manager。
+- 实例角色只挂 `AmazonSSMManagedInstanceCore`，没有 Secrets Manager 权限；
+  数据库密码请用自己的 IAM 权限读取。
+
+### 操作跳板机
+
+```bash
+# 1. 拉起 1 台（开始计费）
+aws autoscaling set-desired-capacity --region ap-northeast-1 \
+  --auto-scaling-group-name platform-dev-bastion --desired-capacity 1
+
+# 2. 等待 SSM Agent 上线（通常 1-2 分钟）
+aws ssm describe-instance-information --region ap-northeast-1 \
+  --filters Key=PingStatus,Values=Online \
+  --query 'InstanceInformationList[].{InstanceId:InstanceId,ComputerName:ComputerName,PingStatus:PingStatus}' \
+  --output table
+
+# 3. 取实例 ID
+aws autoscaling describe-auto-scaling-groups --region ap-northeast-1 \
+  --auto-scaling-group-names platform-dev-bastion \
+  --query 'AutoScalingGroups[0].Instances[].InstanceId' --output text
+
+# 4. 本地 13306 → RDS:3306；DBeaver/Navicat 连 127.0.0.1:13306
+aws ssm start-session --region ap-northeast-1 --target <instance-id> \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["<rds-endpoint>"],"portNumber":["3306"],"localPortNumber":["13306"]}'
+
+# 5. 用完缩回 0（实例和根卷一起删除，停止计费）
+aws autoscaling set-desired-capacity --region ap-northeast-1 \
+  --auto-scaling-group-name platform-dev-bastion --desired-capacity 0
+```
+
+`terraform output` 会直接给出以上命令：
+`bastion_asg_name`、`bastion_security_group_id`、`bastion_scale_up_command`、
+`bastion_scale_down_command`、`bastion_instance_id_command`、
+`bastion_ssm_ready_command`、`bastion_port_forward_command`、
+`bastion_developer_policy_json`。
+
+### 开发人员 IAM 策略
+
+`bastion_developer_policy_json` 输出一份最小权限策略：只允许
+`ssm:StartSession`，通过 `ssm:resourceTag/Bastion` 限定到本环境的跳板机实例，
+通过文档 ARN 限定只能用 `AWS-StartPortForwardingSessionToRemoteHost`，
+并要求 MFA。注意 SSM 并没有名为
+`ssm:StartPortForwardingSessionToRemoteHost` 的 IAM action —— 端口转发统一用
+`ssm:StartSession` 授权，文档 ARN 才是限制点。
+
+成本提示：跳板机空闲时为零成本；运行期间按 t4g.micro + 8 GiB gp3 + 公网 IPv4
+计费（公网 IPv4 与是否绑定 EIP 无关）。不创建 Interface 端点，因此没有端点
+AZ-hour 费用。
+
 
 ## 快速开始
 
 ```bash
 make validate        # terraform fmt -check + 三个环境 validate
+make test            # 模块测试（terraform test + mock provider，不连 AWS）
 make scan            # checkov 全量扫描 + 高危门禁
 make plan            # 三个环境 plan（无凭据时自动离线）
 make check           # validate + scan
+make check-tags      # 离线 plan 后检查每个资源的基础标签
+make quotas          # 只读的 VPC/IGW/EIP/RDS 配额预检（需要 AWS 凭据）
+make verify          # 一条命令：validate + 模块测试 + 标签 + 离线 plan + checkov
 
 make apply           # 故意报错退出，见下方审批流程
 ```
@@ -128,10 +221,15 @@ make apply           # 故意报错退出，见下方审批流程
 | --- | --- |
 | `terraform fmt -check` | 任何格式漂移 |
 | `terraform validate` | 任一环境或 bootstrap 校验失败 |
+| `terraform test` | `bastion` / `rds-mysql` 模块测试断言失败（ASG 容量、无密钥对、单 AZ、无公网访问等） |
+| 标签合规 | 任一可打标签资源缺少 `Project` / `Environment` / `ManagedBy` / `Repository` |
 | `tflint` | provider 用法、未使用声明、AWS 规则违规 |
 | `shellcheck` / `actionlint` | 脚本或 workflow 的静态错误 |
 | `checkov` | 命中 `scripts/checkov_gate.py` 中的高危规则，或报告 CRITICAL/HIGH |
 | account ID 校验 | `env.tfvars` 的账户 ID 与所假设角色不一致 |
+
+`make quotas` 不在 CI 里：它需要 `service-quotas` 权限，且必须在真实账户上运行。
+apply 前由人工执行，见 [docs/PLAN-CHECKLIST.md](docs/PLAN-CHECKLIST.md)。
 
 Checkov 的 severity 元数据只在接入 Prisma Cloud 平台时才完整，离线运行时为 `null`。
 因此门禁使用**显式高危清单**而不是 `--hard-fail-on HIGH`，避免「什么都没拦住」的假绿。
@@ -151,7 +249,12 @@ Checkov 的 severity 元数据只在接入 Prisma Cloud 平台时才完整，离
 | S3 桶审计 | 桶自记录访问日志到 `access-logs/` |
 | 传输加密 | 桶策略 Deny 所有 `aws:SecureTransport=false` |
 | 网络审计 | VPC flow logs，`ALL`，60s 聚合，KMS 加密 |
-| 公网 IP | `map_public_ip_on_launch = false`，按需绑 EIP |
+| 公网 IP | `map_public_ip_on_launch = false`；只有跳板机在启动模板里显式启用公网 IPv4（无 EIP、无入站） |
+| 数据库不暴露 | RDS 在私网子网，`publicly_accessible = false`，入站只来自跳板机安全组 |
+| 数据库凭据 | Secrets Manager 托管主用户密码（自动轮转），Terraform state 无明文 |
+| 数据库登录面 | 跳板机零入站规则；端口转发全部走 SSM Session Manager |
+| 实例角色最小权限 | 只挂 `AmazonSSMManagedInstanceCore`，无其他权限 |
+| 跳板机成本 | ASG desired=0；根卷 `delete_on_termination = true` |
 
 ## 文档
 
@@ -159,4 +262,6 @@ Checkov 的 severity 元数据只在接入 Prisma Cloud 平台时才完整，离
 - [docs/CI-CD.md](docs/CI-CD.md) — 流水线、OIDC、审批门禁、排障
 - [docs/RISKS.md](docs/RISKS.md) — 风险清单与缓解措施
 - [docs/PLAN-CHECKLIST.md](docs/PLAN-CHECKLIST.md) — plan 预期校验点与危险信号
+- [modules/rds-mysql/README.md](modules/rds-mysql/README.md) — 单 AZ MySQL 与 Secrets Manager 密码
+- [modules/bastion/README.md](modules/bastion/README.md) — 跳板机的访问方式与安全组
 - [bootstrap/README.md](bootstrap/README.md) — OIDC provider 与 IAM 角色
