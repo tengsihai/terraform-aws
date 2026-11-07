@@ -911,6 +911,23 @@ data "aws_iam_policy_document" "react_aws_deploy" {
       resources = var.react_aws_distribution_arns
     }
   }
+
+  # 站点桶使用 SSE-KMS + BucketKey：上传要 GenerateDataKey，
+  # 读回对象要 Decrypt。只授权到这张站点桶的 CMK。
+  dynamic "statement" {
+    for_each = length(var.react_aws_site_kms_key_arns) > 0 ? [1] : []
+
+    content {
+      sid    = "UseSiteBucketKey"
+      effect = "Allow"
+      actions = [
+        "kms:Decrypt",
+        "kms:DescribeKey",
+        "kms:GenerateDataKey",
+      ]
+      resources = var.react_aws_site_kms_key_arns
+    }
+  }
 }
 
 resource "aws_iam_role" "react_aws_deploy" {
@@ -1038,7 +1055,14 @@ data "aws_iam_policy_document" "lambda_aws_deploy" {
       effect = "Allow"
       actions = [
         "s3:CreateBucket",
+        "s3:GetBucketEncryption",
         "s3:GetBucketLocation",
+        "s3:GetBucketOwnershipControls",
+        "s3:GetBucketPolicy",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:GetBucketTagging",
+        "s3:GetBucketVersioning",
+        "s3:GetEncryptionConfiguration",
         "s3:ListBucket",
         "s3:PutBucketEncryption",
         "s3:PutBucketOwnershipControls",
@@ -1046,6 +1070,7 @@ data "aws_iam_policy_document" "lambda_aws_deploy" {
         "s3:PutBucketPublicAccessBlock",
         "s3:PutBucketTagging",
         "s3:PutBucketVersioning",
+        "s3:PutEncryptionConfiguration",
       ]
       resources = var.lambda_aws_artifact_bucket_arns
     }
@@ -1098,6 +1123,26 @@ data "aws_iam_policy_document" "lambda_aws_deploy" {
       ]
       resources = var.lambda_execution_role_arns
     }
+  }
+
+  # 流水线需要读环境 state 里的网络/安全组输出。
+  statement {
+    sid       = "ReadTerraformState"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = [for env in var.environments : "arn:${local.partition}:s3:::${var.state_bucket_name}/${var.state_key_prefix}/${env}/terraform.tfstate"]
+  }
+
+  statement {
+    sid    = "ReadNetworkForLambda"
+    effect = "Allow"
+    actions = [
+      "ec2:DescribeNetworkInterfaces",
+      "ec2:DescribeSecurityGroups",
+      "ec2:DescribeSubnets",
+      "ec2:DescribeVpcs",
+    ]
+    resources = ["*"]
   }
 }
 
