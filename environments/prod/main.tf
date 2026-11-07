@@ -19,6 +19,36 @@ locals {
   site_bucket_name = "${local.name_prefix}-site-${var.aws_account_id}-${var.aws_region}"
 }
 
+data "aws_partition" "current" {}
+
+###############################################################################
+# Lambda execution role
+#
+# lambda-aws 的部署角色只能对这个角色执行 iam:PassRole；执行角色本身由
+# 本仓库管理，避免外部流水线获得创建任意 IAM 角色的能力。
+###############################################################################
+
+resource "aws_iam_role" "lambda_execution" {
+  name        = "${local.name_prefix}-lambda-execution"
+  description = "Execution role passed to Lambda functions deployed by the lambda-aws pipeline."
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-lambda-execution" })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
 module "logging" {
   source = "../../modules/logging-s3"
 

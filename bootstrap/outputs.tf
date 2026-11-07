@@ -18,6 +18,16 @@ output "apply_role_arns" {
   value       = { for env, role in aws_iam_role.apply : env => role.arn }
 }
 
+output "react_aws_deploy_role_arns" {
+  description = "Map of environment to the react-aws deploy role ARN. Set it as AWS_ROLE_ARN in the react-aws workflow."
+  value       = { for env, role in aws_iam_role.react_aws_deploy : env => role.arn }
+}
+
+output "lambda_aws_deploy_role_arns" {
+  description = "Map of environment to the lambda-aws deploy role ARN. Set it as AWS_ROLE_ARN in the lambda-aws workflow."
+  value       = { for env, role in aws_iam_role.lambda_aws_deploy : env => role.arn }
+}
+
 output "apply_permissions_boundary_arn" {
   description = "Permissions boundary attached to every apply role (allowed services, no IAM user credentials, deploy region only)."
   value       = aws_iam_policy.apply_boundary.arn

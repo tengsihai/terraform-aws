@@ -23,6 +23,21 @@ fork 出来的 PR 拿不到 OIDC token，所以外部贡献者无法借此访问
 | `aws_iam_role.apply["dev"]` | `repo:<owner>/<repo>:environment:dev` | 网络/存储/KMS/日志/EC2/ASG/RDS/Secrets Manager/IAM 变更，挂权限边界 |
 | `aws_iam_role.apply["staging"]` | `repo:<owner>/<repo>:environment:staging` | 同上（`environments` 含 staging 时才创建） |
 | `aws_iam_role.apply["prod"]` | `repo:<owner>/<repo>:environment:prod` | 同上（`environments` 含 prod 时才创建） |
+| `aws_iam_role.react_aws_deploy["dev"]` | `repo:tengsihai/react-aws:environment:dev` | 站点桶对象读写 + CloudFront invalidation，不共用基础设施角色 |
+| `aws_iam_role.lambda_aws_deploy["dev"]` | `repo:tengsihai/lambda-aws:environment:dev` | SAM/CloudFormation + Lambda + API Gateway；`iam:PassRole` 只允许执行角色 ARN |
+
+### 一个工程一个部署角色
+
+`terraform-plan` / `terraform-apply-<env>` **只信任本仓库**。其他工程各有独立角色：
+
+- `react-aws-deploy-<env>`：只作用于 `react_aws_site_bucket_arns` 和
+  `react_aws_distribution_arns` 列出的桶与分发；
+- `lambda-aws-deploy-<env>`：Lambda / API Gateway 作用在账户与区域内，
+  SAM 产物桶由 `lambda_aws_artifact_bucket_arns` 指定，
+  `iam:PassRole` 只作用于 `lambda_execution_role_arns`。
+
+外部流水线在 GitHub Environment 里配置自己的角色 ARN，不要复用
+`terraform-apply-dev`。`environments` 里的每个环境都会为两者各建一个角色。
 
 ### sub claim 有两种格式
 
