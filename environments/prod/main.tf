@@ -55,6 +55,12 @@ resource "aws_iam_role_policy_attachment" "lambda_vpc_execution" {
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
+# 函数模板开启了 Tracing: Active，需要向 X-Ray 写 trace。
+resource "aws_iam_role_policy_attachment" "lambda_xray" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
 # 只允许读取 RDS 托管的主用户密钥，不授予其他 Secrets Manager 权限。
 resource "aws_iam_role_policy" "lambda_rds_secret" {
   name = "read-rds-master-secret"
