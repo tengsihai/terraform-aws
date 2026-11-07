@@ -173,6 +173,7 @@ aws cloudfront create-invalidation \
 | `terraform-apply-<env>` | `terraform-aws` | 基础设施写权限，挂权限边界 |
 | `react-aws-deploy-<env>` | `react-aws` | 站点桶 List/Get/Put/Delete、CloudFront invalidation、站点 CMK 的 GenerateDataKey/Decrypt |
 | `lambda-aws-deploy-<env>` | `lambda-aws` | SAM/CloudFormation、Lambda、API Gateway、产物桶；`iam:PassRole` 仅限执行角色 ARN |
+| `rds-migrate-<env>` | `mysql-aws` | 读 RDS 托管主用户密钥、SSM 端口转发到跳板机、临时调整跳板机 ASG 容量 |
 
 外部流水线的约定：
 
@@ -180,6 +181,8 @@ aws cloudfront create-invalidation \
 - `lambda-aws` 用 `lambda-aws-deploy-<env>` 执行 `sam deploy`；模板的 `Role` 必须是
   `lambda_execution_role_arn` 的完整 ARN，函数的 `VpcConfig` 用
   `lambda_security_group_id` 和私网子网
+- `mysql-aws` 用 `rds-migrate-<env>` 执行 Flyway 迁移；角色由 `bootstrap/` 创建，
+  不再在业务仓库里维护 IAM 脚本
 - 任何流水线都不应使用 `terraform-apply-<env>`，该角色只信任本仓库
 
 ## 数据库与跳板机
