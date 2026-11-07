@@ -132,6 +132,12 @@ variable "react_aws_distribution_arns" {
   default     = []
 }
 
+variable "react_aws_site_kms_key_arns" {
+  description = "KMS key ARNs encrypting the react-aws site bucket. PutObject with SSE-KMS needs GenerateDataKey; GetObject needs Decrypt."
+  type        = list(string)
+  default     = []
+}
+
 variable "lambda_aws_github_repo" {
   description = "GitHub repository (owner/repo) for the Lambda + API Gateway pipeline."
   type        = string
