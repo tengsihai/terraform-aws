@@ -3,6 +3,31 @@
 github_owner = "tengsihai"
 github_repo  = "terraform-aws"
 
+# --- Per-project deploy roles (one role per repository) ----------------------
+# react-aws: static frontend publishing (S3 objects + CloudFront invalidation).
+react_aws_site_bucket_arns = [
+  "arn:aws:s3:::platform-dev-site-790354569983-ap-northeast-1",
+]
+react_aws_distribution_arns = [
+  "arn:aws:cloudfront::790354569983:distribution/E2MPLV64930CB2",
+]
+react_aws_site_kms_key_arns = [
+  "arn:aws:kms:ap-northeast-1:790354569983:key/5698487f-6695-4621-9339-2440d2f51e4e",
+]
+
+# lambda-aws: SAM/CloudFormation deploy. With `sam deploy --resolve-s3` the
+# CLI uses the aws-sam-cli-managed-default-* bucket; add your own bucket ARN
+# here if you pass --s3-bucket instead.
+lambda_aws_artifact_bucket_arns = [
+  "arn:aws:s3:::aws-sam-cli-managed-default-*",
+]
+
+# Execution roles are created by environments/*. The lambda-aws role may only
+# PassRole these exact ARNs.
+lambda_execution_role_arns = [
+  "arn:aws:iam::790354569983:role/platform-dev-lambda-execution",
+]
+
 state_bucket_name = "platform-terraform-state-790354569983-ap-northeast-1"
 # state_kms_key_arn = "arn:aws:kms:ap-northeast-1:790354569983:key/REPLACE-ME"
 

@@ -1,7 +1,7 @@
 # terraform-aws — 三可用区 VPC 网络基础设施
 
-标准 Terraform 模块仓库：可复用的 `vpc` / `logging-s3` / `rds-mysql` / `bastion` 模块 +
-`dev` / `staging` / `prod` 三个环境根目录。
+标准 Terraform 模块仓库：可复用的 `vpc` / `logging-s3` / `rds-mysql` / `bastion` /
+`cloudfront-s3` 模块 + `dev` / `staging` / `prod` 三个环境根目录。
 
 设计约束（硬性）：
 
@@ -68,6 +68,11 @@ feat/xxx ──PR──► dev ──PR──► staging ──PR──► prod 
 │   │   ├── variables.tf / outputs.tf / versions.tf
 │   │   └── README.md
 │   ├── logging-s3/                # 加密日志桶模块
+│   ├── cloudfront-s3/             # 私有 S3 源站 + CloudFront（OAC）静态站点
+│   │   ├── main.tf                #   KMS / 桶 / 桶策略 / OAC / 缓存与响应头策略 / 分发
+│   │   ├── variables.tf / outputs.tf / versions.tf
+│   │   ├── tests/cloudfront_s3.tftest.hcl
+│   │   └── README.md
 │   ├── rds-mysql/                 # 单 AZ MySQL + Secrets Manager 密码
 │   │   ├── main.tf                #   子网组 / 安全组 / mysql 入站规则 / db_instance
 │   │   ├── variables.tf / outputs.tf / versions.tf
@@ -118,7 +123,42 @@ feat/xxx ──PR──► dev ──PR──► staging ──PR──► prod 
 | 跳板机登录方式 | 公有子网 + IGW 直连 SSM 公网端点（无 SSH、无密钥对、无 EIP） | 同左 | 同左 |
 | SSM Interface 端点 | 不创建 | 不创建 | 不创建 |
 | Secrets Manager Interface 端点 | 创建 | 不创建 | 不创建 |
-| 预期 plan | 57 add | 56 add | 56 add |
+| 静态站点桶 | `<prefix>-site-<account>-<region>` | 同左 | 同左 |
+| CloudFront 价格等级 | PriceClass_200 | 同左 | 同左 |
+| SPA 回退（403/404 → index.html） | 是 | 是 | 是 |
+| 预期 plan | 77 add | 76 add | 76 add |
+
+## 静态站点（CloudFront + S3）
+
+```
+浏览器 ── HTTPS (TLS 1.2+) ──► CloudFront（OAC + 安全响应头）
+                                   │  SigV4，只允许本分发
+                                   ▼
+                             私有 S3 桶（SSE-KMS，Block Public Access 全开）
+                                   │  S3 服务端访问日志
+                                   ▼
+                             加密日志桶 access-logs/
+```
+
+- 源站桶**没有**公有读策略，也不启用 S3 静态网站托管；所有读取都经过
+  CloudFront OAC，桶策略用 `aws:SourceArn` 锁定到本环境的分发。
+- 使用 CloudFront 默认的 `*.cloudfront.net` 证书，因此模块不需要
+  `us-east-1` 的 ACM/WAF provider；自定义域名与 WAF 见 R-31 / R-34。
+- `site_spa_mode = true` 时，S3 的 403/404 会回退到 `index.html`（HTTP 200），
+  适合前端路由。
+
+发布内容（需对桶有 `s3:PutObject` 权限）：
+
+```bash
+# 输出名见 terraform output
+aws s3 sync ./dist "s3://$(terraform -chdir=environments/dev output -raw site_bucket_name)" --delete
+aws cloudfront create-invalidation \
+  --distribution-id "$(terraform -chdir=environments/dev output -raw cloudfront_distribution_id)" \
+  --paths "/*"
+```
+
+相关输出：`site_bucket_name`、`cloudfront_distribution_id`、
+`cloudfront_domain_name`、`cloudfront_hosted_zone_id`。
 
 ## 数据库与跳板机
 
@@ -244,7 +284,7 @@ make apply           # 故意报错退出，见下方审批流程
 | --- | --- |
 | `terraform fmt -check` | 任何格式漂移 |
 | `terraform validate` | 任一环境或 bootstrap 校验失败 |
-| `terraform test` | `bastion` / `rds-mysql` 模块测试断言失败（ASG 容量、无密钥对、单 AZ、无公网访问等） |
+| `terraform test` | `bastion` / `rds-mysql` / `cloudfront-s3` 模块测试断言失败（ASG 容量、无密钥对、单 AZ、桶不公开、仅 OAC 读取等） |
 | 标签合规 | 任一可打标签资源缺少 `Project` / `Environment` / `ManagedBy` / `Repository` |
 | `tflint` | provider 用法、未使用声明、AWS 规则违规 |
 | `shellcheck` / `actionlint` | 脚本或 workflow 的静态错误 |
@@ -279,6 +319,11 @@ Checkov 的 severity 元数据只在接入 Prisma Cloud 平台时才完整，离
 | 数据库登录面 | 跳板机零入站规则；端口转发全部走 SSM Session Manager |
 | 实例角色最小权限 | 只挂 `AmazonSSMManagedInstanceCore`，无其他权限 |
 | 跳板机成本 | ASG desired=0；根卷 `delete_on_termination = true` |
+| 静态站点源站 | 桶私有（四项 Block Public Access + `BucketOwnerEnforced`），只有本分发能通过 OAC 读取 |
+| 静态站点加密 | SSE-KMS（CMK 自动轮转）；CloudFront 仅在 `aws:SourceArn` 匹配本分发时可 Decrypt |
+| 静态站点传输 | 查看器强制跳转 HTTPS，最低 TLS 1.2；统一注入 HSTS / DENY / nosniff / referrer 响应头 |
+| 静态站点审计 | 源站桶的 S3 服务端访问日志写入加密日志桶 |
+| Lambda 执行角色 | 只有 CloudWatch Logs、X-Ray、VPC ENI 和读取 RDS 主用户密钥的权限；由本仓库创建，外部流水线只能 PassRole |
 
 ## 文档
 
@@ -286,6 +331,7 @@ Checkov 的 severity 元数据只在接入 Prisma Cloud 平台时才完整，离
 - [docs/CI-CD.md](docs/CI-CD.md) — 流水线、OIDC、审批门禁、排障
 - [docs/RISKS.md](docs/RISKS.md) — 风险清单与缓解措施
 - [docs/PLAN-CHECKLIST.md](docs/PLAN-CHECKLIST.md) — plan 预期校验点与危险信号
+- [modules/cloudfront-s3/README.md](modules/cloudfront-s3/README.md) — 私有 S3 源站、OAC 与发布方式
 - [modules/rds-mysql/README.md](modules/rds-mysql/README.md) — 单 AZ MySQL 与 Secrets Manager 密码
 - [modules/bastion/README.md](modules/bastion/README.md) — 跳板机的访问方式与安全组
 - [bootstrap/README.md](bootstrap/README.md) — OIDC provider 与 IAM 角色

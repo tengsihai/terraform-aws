@@ -136,10 +136,11 @@ S3 日志桶的访问日志**写到桶自身**。这是刻意选择：审计线�
 
 ```
 environments/<env>
-   ├── module.logging  (modules/logging-s3)  → bucket_arn
-   ├── module.vpc      (modules/vpc)         → vpc_id, subnet_ids, ...
-   ├── module.bastion  (modules/bastion)     → asg_name, security_group_id, developer_policy_json
-   └── module.rds      (modules/rds-mysql)   → endpoint, master_user_secret_arn
+   ├── module.logging  (modules/logging-s3)   → bucket_arn, bucket_id
+   ├── module.site     (modules/cloudfront-s3)→ distribution_id, bucket_id, domain_name
+   ├── module.vpc      (modules/vpc)          → vpc_id, subnet_ids, ...
+   ├── module.bastion  (modules/bastion)      → asg_name, security_group_id, developer_policy_json
+   └── module.rds      (modules/rds-mysql)    → endpoint, master_user_secret_arn
 ```
 
 - `logging-s3` 完全不知道 VPC 的存在，只暴露 `bucket_arn`。
@@ -150,6 +151,8 @@ environments/<env>
 - `rds` 接收 `[bastion, lambda]` 两张安全组 ID 作为入站来源；`bastion` 与
   Lambda 都不反向依赖 `rds`。
 - 跳板机不再挂 Secrets Manager 读取权限：实例角色只有 SSM 托管策略。
+- `site` 只通过 `log_bucket_id` 依赖 `logging`，用于 S3 服务端访问日志；
+  它不进入 VPC，也不需要安全组或子网。
 
 ## 8. 数据库与跳板机
 
@@ -219,7 +222,35 @@ ASG 的 `desired_capacity` 设置了 `lifecycle.ignore_changes`，因此手工
 SSM 没有 `ssm:StartPortForwardingSessionToRemoteHost` 这个 IAM action；
 端口转发的授权动作是 `ssm:StartSession`，文档 ARN 才是收窄手段。
 
-## 9. 变更流程
+## 9. 静态站点（CloudFront + S3）
+
+```
+浏览器 ── HTTPS (TLS 1.2+) ──► CloudFront 分发（默认 *.cloudfront.net 证书）
+                                   │  缓存策略 + 安全响应头 + OAC (SigV4)
+                                   ▼
+                             私有 S3 源站桶（SSE-KMS CMK，Block Public Access 全开）
+                                   │  S3 服务端访问日志
+                                   ▼
+                             加密日志桶 access-logs/
+```
+
+| 项 | 选择 | 说明 |
+| --- | --- | --- |
+| 源站可见性 | 私有，无公有读策略 | 不启用 S3 静态网站托管 |
+| 分发读取方式 | Origin Access Control | 分发用 SigV4 签名，桶策略用 `aws:SourceArn` 锁定本分发 |
+| 对象加密 | SSE-KMS，客户托管 CMK | CloudFront 只在 `aws:SourceArn` 匹配时获得 `kms:Decrypt` |
+| 传输 | `redirect-to-https` + `TLSv1.2_2021` | 查看器不允许明文 |
+| 响应头 | HSTS（preload）、`X-Frame-Options: DENY`、nosniff、referrer policy | 在边缘统一注入 |
+| 缓存 | 1 小时默认 TTL，压缩开启 | 缓存键不含 cookie / header / query string |
+| 访问日志 | S3 服务端访问日志 → 加密日志桶 | CloudFront 标准日志见 R-32 |
+| 证书 | CloudFront 默认证书 | 不引入 `us-east-1` ACM；自定义域名见 R-34 |
+| WAF | 不启用 | 见 R-31 |
+| 高可用 | 单区域 S3 源站 | S3 本身多 AZ 持久；跨区域见 R-33 / R-06 |
+
+SPA 场景把 `site_spa_mode = true` 打开，CloudFront 会把 S3 的 403/404 映射为
+`index.html` 且返回 HTTP 200，前端路由因此可以处理深链接。
+
+## 10. 变更流程
 
 ```
 编辑代码/变量

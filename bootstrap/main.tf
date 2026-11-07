@@ -32,6 +32,9 @@ locals {
   #
   # 两种都信任。login 和仓库名是精确匹配的，而且 login 不能包含 '@'，
   # 所以这里对数字 ID 用通配符并不会放宽信任范围。
+  #
+  # 其他工程（react-aws / lambda-aws）不共用这两个角色，各自有独立的
+  # deploy role，见下方 Project deploy roles。
   repo_subject_prefixes = [
     "${local.repo_subject}:environment:",
     "repo:${var.github_owner}@*/${var.github_repo}@*:environment:",
@@ -229,6 +232,32 @@ data "aws_iam_policy_document" "plan_read" {
     actions   = ["autoscaling:Describe*"]
     resources = ["*"]
   }
+
+  # CloudFront 是全局服务，资源 ARN 不带区域。plan 需要读回分发、
+  # OAC、缓存/请求/响应头策略才能生成准确的 diff。
+  statement {
+    sid    = "ReadCloudFront"
+    effect = "Allow"
+    actions = [
+      "cloudfront:GetCachePolicy",
+      "cloudfront:GetCachePolicyConfig",
+      "cloudfront:GetDistribution",
+      "cloudfront:GetDistributionConfig",
+      "cloudfront:GetOriginAccessControl",
+      "cloudfront:GetOriginAccessControlConfig",
+      "cloudfront:GetOriginRequestPolicy",
+      "cloudfront:GetOriginRequestPolicyConfig",
+      "cloudfront:GetResponseHeadersPolicy",
+      "cloudfront:GetResponseHeadersPolicyConfig",
+      "cloudfront:ListCachePolicies",
+      "cloudfront:ListDistributions",
+      "cloudfront:ListOriginAccessControls",
+      "cloudfront:ListOriginRequestPolicies",
+      "cloudfront:ListResponseHeadersPolicies",
+      "cloudfront:ListTagsForResource",
+    ]
+    resources = ["*"]
+  }
 }
 
 ###############################################################################
@@ -271,6 +300,7 @@ data "aws_iam_policy_document" "apply_mutations" {
       "ec2:DeleteVpcEndpoints",
       "ec2:DetachInternetGateway",
       "ec2:DisassociateRouteTable",
+      "ec2:ModifySecurityGroupRules",
       "ec2:ModifySubnetAttribute",
       "ec2:ModifyVpcAttribute",
       "ec2:ModifyVpcEndpoint",
@@ -409,6 +439,44 @@ data "aws_iam_policy_document" "apply_mutations" {
     resources = ["*"]
   }
 
+  # 静态站点分发（modules/cloudfront-s3）。CloudFront 的资源 ARN 是全局的
+  # （arn:aws:cloudfront::<account>:*），所以 action 作用在 * 上，由边界兜底。
+  statement {
+    sid    = "ManageCloudFront"
+    effect = "Allow"
+    actions = [
+      "cloudfront:CreateCachePolicy",
+      "cloudfront:CreateDistribution",
+      "cloudfront:CreateInvalidation",
+      "cloudfront:CreateOriginAccessControl",
+      "cloudfront:CreateOriginRequestPolicy",
+      "cloudfront:CreateResponseHeadersPolicy",
+      "cloudfront:DeleteCachePolicy",
+      "cloudfront:DeleteDistribution",
+      "cloudfront:DeleteOriginAccessControl",
+      "cloudfront:DeleteOriginRequestPolicy",
+      "cloudfront:DeleteResponseHeadersPolicy",
+      "cloudfront:GetInvalidation",
+      "cloudfront:ListInvalidations",
+      "cloudfront:TagResource",
+      "cloudfront:UntagResource",
+      "cloudfront:UpdateCachePolicy",
+      "cloudfront:UpdateDistribution",
+      "cloudfront:UpdateOriginAccessControl",
+      "cloudfront:UpdateOriginRequestPolicy",
+      "cloudfront:UpdateResponseHeadersPolicy",
+    ]
+    resources = ["*"]
+  }
+
+  # CloudFront 首次创建分发时可能创建服务相关角色。
+  statement {
+    sid       = "CreateCloudFrontServiceLinkedRole"
+    effect    = "Allow"
+    actions   = ["iam:CreateServiceLinkedRole"]
+    resources = ["arn:${local.partition}:iam::${local.account_id}:role/aws-service-role/cloudfront.amazonaws.com/*"]
+  }
+
   statement {
     sid    = "ManageLogBuckets"
     effect = "Allow"
@@ -534,6 +602,7 @@ data "aws_iam_policy_document" "apply_boundary" {
     effect = "Allow"
     actions = [
       "autoscaling:*",
+      "cloudfront:*",
       "ec2:*",
       "kms:*",
       "logs:*",
@@ -594,12 +663,13 @@ data "aws_iam_policy_document" "apply_boundary" {
   statement {
     sid         = "DenyOutsideDeployRegion"
     effect      = "Deny"
-    not_actions = ["iam:*", "sts:*"]
+    not_actions = ["cloudfront:*", "iam:*", "sts:*"]
     resources   = ["*"]
 
     # 用 StringNotEquals 而不是 StringNotEqualsIfExists：IfExists 语句在请求里
     # **没有** aws:RequestedRegion 时也会命中，等于把所有全球型调用全部拒绝。
-    # 全球型服务（IAM、STS）不携带这个键，这里用 NotAction 直接豁免。
+    # 全球型服务（CloudFront、IAM、STS）不携带这个键，这里用 NotAction 直接豁免。
+    # CloudFront 的管理端点固定在 us-east-1，但请求是全局型的，不能按部署区域限制。
     condition {
       test     = "StringNotEquals"
       variable = "aws:RequestedRegion"
@@ -720,4 +790,377 @@ resource "aws_iam_role_policy" "apply" {
   name   = "terraform-apply"
   role   = aws_iam_role.apply[each.value].id
   policy = data.aws_iam_policy_document.apply_permissions.json
+}
+
+###############################################################################
+# 独立工程的部署角色
+#
+# 每个外部工程一个角色，只信任自己的仓库，只授予自己需要的权限。
+# terraform-plan / terraform-apply-<env> 只服务本仓库。
+###############################################################################
+
+locals {
+  react_aws_subject_prefixes = [
+    "repo:${var.react_aws_github_repo}:environment:",
+    "repo:${split("/", var.react_aws_github_repo)[0]}@*/${split("/", var.react_aws_github_repo)[1]}@*:environment:",
+  ]
+
+  lambda_aws_subject_prefixes = [
+    "repo:${var.lambda_aws_github_repo}:environment:",
+    "repo:${split("/", var.lambda_aws_github_repo)[0]}@*/${split("/", var.lambda_aws_github_repo)[1]}@*:environment:",
+  ]
+}
+
+data "aws_iam_policy_document" "react_aws_trust" {
+  for_each = toset(var.environments)
+
+  statement {
+    sid     = "GitHubActionsReactDeploy"
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = [for prefix in local.react_aws_subject_prefixes : "${prefix}${each.value}"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "lambda_aws_trust" {
+  for_each = toset(var.environments)
+
+  statement {
+    sid     = "GitHubActionsLambdaDeploy"
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = [for prefix in local.lambda_aws_subject_prefixes : "${prefix}${each.value}"]
+    }
+  }
+}
+
+###############################################################################
+# react-aws：静态前端发布（S3 对象 + CloudFront invalidation）
+###############################################################################
+
+data "aws_iam_policy_document" "react_aws_deploy" {
+  dynamic "statement" {
+    for_each = length(var.react_aws_site_bucket_arns) > 0 ? [1] : []
+
+    content {
+      sid       = "ListSiteBuckets"
+      effect    = "Allow"
+      actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
+      resources = var.react_aws_site_bucket_arns
+    }
+  }
+
+  dynamic "statement" {
+    for_each = length(var.react_aws_site_bucket_arns) > 0 ? [1] : []
+
+    content {
+      sid    = "PublishSiteObjects"
+      effect = "Allow"
+      actions = [
+        "s3:DeleteObject",
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:PutObjectTagging",
+      ]
+      resources = [for arn in var.react_aws_site_bucket_arns : "${arn}/*"]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = length(var.react_aws_distribution_arns) > 0 ? [1] : []
+
+    content {
+      sid    = "InvalidateSite"
+      effect = "Allow"
+      actions = [
+        "cloudfront:CreateInvalidation",
+        "cloudfront:GetInvalidation",
+        "cloudfront:ListInvalidations",
+      ]
+      resources = var.react_aws_distribution_arns
+    }
+  }
+
+  # 站点桶使用 SSE-KMS + BucketKey：上传要 GenerateDataKey，
+  # 读回对象要 Decrypt。只授权到这张站点桶的 CMK。
+  dynamic "statement" {
+    for_each = length(var.react_aws_site_kms_key_arns) > 0 ? [1] : []
+
+    content {
+      sid    = "UseSiteBucketKey"
+      effect = "Allow"
+      actions = [
+        "kms:Decrypt",
+        "kms:DescribeKey",
+        "kms:GenerateDataKey",
+      ]
+      resources = var.react_aws_site_kms_key_arns
+    }
+  }
+}
+
+resource "aws_iam_role" "react_aws_deploy" {
+  for_each = toset(var.environments)
+
+  name                 = "react-aws-deploy-${each.value}"
+  description          = "OIDC deploy role for the react-aws frontend pipeline (${each.value}): site bucket objects and CloudFront invalidation only."
+  assume_role_policy   = data.aws_iam_policy_document.react_aws_trust[each.value].json
+  max_session_duration = 3600
+
+  tags = merge(local.tags, { Role = "react-aws-deploy", Environment = each.value })
+}
+
+resource "aws_iam_role_policy" "react_aws_deploy" {
+  for_each = toset(var.environments)
+
+  name   = "react-aws-deploy"
+  role   = aws_iam_role.react_aws_deploy[each.value].id
+  policy = data.aws_iam_policy_document.react_aws_deploy.json
+}
+
+###############################################################################
+# lambda-aws：SAM/CloudFormation 发布 Lambda + API Gateway
+###############################################################################
+
+data "aws_iam_policy_document" "lambda_aws_deploy" {
+  #checkov:skip=CKV_AWS_356:CloudFormation creation and Lambda list actions have no resource-scoped form. The role is limited to this account/region and is only assumable by the lambda-aws repository.
+  #checkov:skip=CKV_AWS_111:Write access is intentionally broad inside this account's Lambda and API Gateway resources; the role has no IAM user, S3 object or other service access beyond the statements below.
+  #checkov:skip=CKV_AWS_109:iam:PassRole is limited to the execution role ARNs in lambda_execution_role_arns and constrained by iam:PassedToService = lambda.amazonaws.com. s3:PutBucketPolicy is limited to the SAM artifact buckets in lambda_aws_artifact_bucket_arns.
+
+  statement {
+    sid    = "ManageSamStacks"
+    effect = "Allow"
+    actions = [
+      "cloudformation:CancelUpdateStack",
+      "cloudformation:ContinueUpdateRollback",
+      "cloudformation:CreateChangeSet",
+      "cloudformation:CreateStack",
+      "cloudformation:DeleteChangeSet",
+      "cloudformation:DeleteStack",
+      "cloudformation:DescribeChangeSet",
+      "cloudformation:DescribeStackEvents",
+      "cloudformation:DescribeStackResource",
+      "cloudformation:DescribeStackResources",
+      "cloudformation:DescribeStacks",
+      "cloudformation:ExecuteChangeSet",
+      "cloudformation:GetStackPolicy",
+      "cloudformation:GetTemplate",
+      "cloudformation:GetTemplateSummary",
+      "cloudformation:ListChangeSets",
+      "cloudformation:ListStackResources",
+      "cloudformation:ListStacks",
+      "cloudformation:SetStackPolicy",
+      "cloudformation:TagResource",
+      "cloudformation:UntagResource",
+      "cloudformation:UpdateStack",
+      "cloudformation:ValidateTemplate",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ManageLambdaFunctions"
+    effect = "Allow"
+    actions = [
+      "lambda:AddLayerVersionPermission",
+      "lambda:AddPermission",
+      "lambda:CreateAlias",
+      "lambda:CreateFunction",
+      "lambda:DeleteAlias",
+      "lambda:DeleteFunction",
+      "lambda:DeleteFunctionConcurrency",
+      "lambda:DeleteLayerVersion",
+      "lambda:GetAlias",
+      "lambda:GetFunction",
+      "lambda:GetFunctionConcurrency",
+      "lambda:GetFunctionConfiguration",
+      "lambda:GetLayerVersion",
+      "lambda:GetLayerVersionPolicy",
+      "lambda:GetPolicy",
+      "lambda:ListAliases",
+      "lambda:ListLayerVersions",
+      "lambda:ListTags",
+      "lambda:ListVersionsByFunction",
+      "lambda:PublishLayerVersion",
+      "lambda:PublishVersion",
+      "lambda:PutFunctionConcurrency",
+      "lambda:RemoveLayerVersionPermission",
+      "lambda:RemovePermission",
+      "lambda:TagResource",
+      "lambda:UntagResource",
+      "lambda:UpdateAlias",
+      "lambda:UpdateFunctionCode",
+      "lambda:UpdateFunctionConfiguration",
+    ]
+    resources = ["arn:${local.partition}:lambda:${var.aws_region}:${local.account_id}:*"]
+  }
+
+  # List/account 级只读动作不支持资源级授权。
+  statement {
+    sid    = "ReadLambdaInventory"
+    effect = "Allow"
+    actions = [
+      "lambda:GetAccountSettings",
+      "lambda:ListEventSourceMappings",
+      "lambda:ListFunctions",
+      "lambda:ListLayers",
+    ]
+    resources = ["*"]
+  }
+
+  # API Gateway 的 IAM action 就是 HTTP 动词，资源 ARN 不含账号。
+  statement {
+    sid       = "ManageApiGateway"
+    effect    = "Allow"
+    actions   = ["apigateway:*"]
+    resources = ["arn:${local.partition}:apigateway:${var.aws_region}::*"]
+  }
+
+  dynamic "statement" {
+    for_each = length(var.lambda_aws_artifact_bucket_arns) > 0 ? [1] : []
+
+    content {
+      sid    = "ManageArtifactBuckets"
+      effect = "Allow"
+      actions = [
+        "s3:CreateBucket",
+        "s3:GetBucketEncryption",
+        "s3:GetBucketLocation",
+        "s3:GetBucketOwnershipControls",
+        "s3:GetBucketPolicy",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:GetBucketTagging",
+        "s3:GetBucketVersioning",
+        "s3:GetEncryptionConfiguration",
+        "s3:ListBucket",
+        "s3:PutBucketEncryption",
+        "s3:PutBucketOwnershipControls",
+        "s3:PutBucketPolicy",
+        "s3:PutBucketPublicAccessBlock",
+        "s3:PutBucketTagging",
+        "s3:PutBucketVersioning",
+        "s3:PutEncryptionConfiguration",
+      ]
+      resources = var.lambda_aws_artifact_bucket_arns
+    }
+  }
+
+  dynamic "statement" {
+    for_each = length(var.lambda_aws_artifact_bucket_arns) > 0 ? [1] : []
+
+    content {
+      sid    = "ReadWriteArtifacts"
+      effect = "Allow"
+      actions = [
+        "s3:DeleteObject",
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:PutObject",
+      ]
+      resources = [for arn in var.lambda_aws_artifact_bucket_arns : "${arn}/*"]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = length(var.lambda_execution_role_arns) > 0 ? [1] : []
+
+    content {
+      sid       = "PassLambdaExecutionRoles"
+      effect    = "Allow"
+      actions   = ["iam:PassRole"]
+      resources = var.lambda_execution_role_arns
+
+      condition {
+        test     = "StringEquals"
+        variable = "iam:PassedToService"
+        values   = ["lambda.amazonaws.com"]
+      }
+    }
+  }
+
+  dynamic "statement" {
+    for_each = length(var.lambda_execution_role_arns) > 0 ? [1] : []
+
+    content {
+      sid    = "ReadLambdaExecutionRoles"
+      effect = "Allow"
+      actions = [
+        "iam:GetRole",
+        "iam:GetRolePolicy",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+      ]
+      resources = var.lambda_execution_role_arns
+    }
+  }
+
+  # 流水线需要读环境 state 里的网络/安全组输出。
+  statement {
+    sid       = "ReadTerraformState"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = [for env in var.environments : "arn:${local.partition}:s3:::${var.state_bucket_name}/${var.state_key_prefix}/${env}/terraform.tfstate"]
+  }
+
+  statement {
+    sid    = "ReadNetworkForLambda"
+    effect = "Allow"
+    actions = [
+      "ec2:DescribeNetworkInterfaces",
+      "ec2:DescribeSecurityGroups",
+      "ec2:DescribeSubnets",
+      "ec2:DescribeVpcs",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role" "lambda_aws_deploy" {
+  for_each = toset(var.environments)
+
+  name                 = "lambda-aws-deploy-${each.value}"
+  description          = "OIDC deploy role for the lambda-aws pipeline (${each.value}): SAM/CloudFormation, Lambda and API Gateway, scoped PassRole."
+  assume_role_policy   = data.aws_iam_policy_document.lambda_aws_trust[each.value].json
+  max_session_duration = 3600
+
+  tags = merge(local.tags, { Role = "lambda-aws-deploy", Environment = each.value })
+}
+
+resource "aws_iam_role_policy" "lambda_aws_deploy" {
+  for_each = toset(var.environments)
+
+  name   = "lambda-aws-deploy"
+  role   = aws_iam_role.lambda_aws_deploy[each.value].id
+  policy = data.aws_iam_policy_document.lambda_aws_deploy.json
 }

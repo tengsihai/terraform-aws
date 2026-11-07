@@ -14,6 +14,66 @@ locals {
   # S3 桶名全局唯一；用账户 ID + 区域就能稳定复现，
   # 不需要加随机后缀。
   log_bucket_name = "${local.name_prefix}-logs-${var.aws_account_id}-${var.aws_region}"
+
+  # 静态站点源站桶。和数据桶一样，桶名用账户 ID + 区域稳定复现。
+  site_bucket_name = "${local.name_prefix}-site-${var.aws_account_id}-${var.aws_region}"
+}
+
+data "aws_partition" "current" {}
+
+###############################################################################
+# Lambda execution role
+#
+# lambda-aws 的部署角色只能对这个角色执行 iam:PassRole；执行角色本身由
+# 本仓库管理，避免外部流水线获得创建任意 IAM 角色的能力。
+###############################################################################
+
+resource "aws_iam_role" "lambda_execution" {
+  name        = "${local.name_prefix}-lambda-execution"
+  description = "Execution role passed to Lambda functions deployed by the lambda-aws pipeline."
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-lambda-execution" })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# 函数要进 VPC 连 RDS：创建/删除 ENI 的权限由 AWS 托管策略提供。
+resource "aws_iam_role_policy_attachment" "lambda_vpc_execution" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+# 函数模板开启了 Tracing: Active，需要向 X-Ray 写 trace。
+resource "aws_iam_role_policy_attachment" "lambda_xray" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
+# 只允许读取 RDS 托管的主用户密钥，不授予其他 Secrets Manager 权限。
+resource "aws_iam_role_policy" "lambda_rds_secret" {
+  name = "read-rds-master-secret"
+  role = aws_iam_role.lambda_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = module.rds.master_user_secret_arn
+    }]
+  })
 }
 
 module "logging" {
@@ -32,6 +92,30 @@ module "logging" {
   force_destroy                = false
 
   tags = local.common_tags
+}
+
+module "site" {
+  source = "../../modules/cloudfront-s3"
+
+  name        = local.name_prefix
+  environment = local.environment
+  account_id  = var.aws_account_id
+
+  bucket_name   = local.site_bucket_name
+  log_bucket_id = module.logging.bucket_id
+
+  # prod 用最长待删除窗口，误删密钥时有 30 天可恢复。
+  kms_deletion_window_in_days = 30
+
+  default_root_object = var.site_default_root_object
+  spa_mode            = var.site_spa_mode
+  price_class         = var.cloudfront_price_class
+  force_destroy       = var.site_force_destroy
+
+  tags = local.common_tags
+
+  # 日志桶的桶策略必须先存在，S3 才能接受访问日志投递配置。
+  depends_on = [module.logging]
 }
 
 module "vpc" {

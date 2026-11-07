@@ -33,6 +33,16 @@ output "private_subnet_ids" {
   value       = module.vpc.private_subnet_ids
 }
 
+output "lambda_security_group_id" {
+  description = "Security group attached to the Lambda functions."
+  value       = module.vpc.additional_security_group_ids["lambda"]
+}
+
+output "lambda_execution_role_arn" {
+  description = "Execution role passed to Lambda functions by the lambda-aws pipeline."
+  value       = aws_iam_role.lambda_execution.arn
+}
+
 output "private_route_table_ids" {
   description = "Per-AZ private route table IDs."
   value       = module.vpc.private_route_table_ids
@@ -61,6 +71,41 @@ output "log_bucket_arn" {
 output "log_bucket_kms_key_arn" {
   description = "CMK protecting the log bucket."
   value       = module.logging.kms_key_arn
+}
+
+output "site_bucket_name" {
+  description = "Private S3 bucket holding the static site content."
+  value       = module.site.bucket_id
+}
+
+output "site_bucket_arn" {
+  description = "ARN of the private static site bucket."
+  value       = module.site.bucket_arn
+}
+
+output "site_kms_key_arn" {
+  description = "CMK protecting the static site bucket."
+  value       = module.site.kms_key_arn
+}
+
+output "cloudfront_distribution_id" {
+  description = "CloudFront distribution ID, used for cache invalidations."
+  value       = module.site.distribution_id
+}
+
+output "cloudfront_distribution_arn" {
+  description = "ARN of the CloudFront distribution."
+  value       = module.site.distribution_arn
+}
+
+output "cloudfront_domain_name" {
+  description = "Public CloudFront hostname of the static site."
+  value       = module.site.distribution_domain_name
+}
+
+output "cloudfront_hosted_zone_id" {
+  description = "CloudFront hosted zone ID, for alias records against the distribution."
+  value       = module.site.distribution_hosted_zone_id
 }
 
 output "flow_log_group_name" {

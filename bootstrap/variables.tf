@@ -14,6 +14,7 @@ variable "github_repo" {
   nullable    = false
 }
 
+
 ###############################################################################
 # GitHub OIDC 身份提供方
 ###############################################################################
@@ -57,6 +58,7 @@ variable "state_key_prefix" {
   default     = "network"
 }
 
+
 ###############################################################################
 # 部署区域
 ###############################################################################
@@ -98,6 +100,65 @@ variable "plan_environment_name" {
   description = "GitHub environment name that plan jobs use. Must match the `environment:` in plan.yml and drift-detection.yml."
   type        = string
   default     = "terraform-plan"
+}
+
+###############################################################################
+# 独立工程的部署角色
+#
+# 每个工程一个角色，只信任自己的仓库，只授予自己需要的权限。
+# 它们不共用 terraform-apply-<env>（那是本仓库的基础设施写角色）。
+###############################################################################
+
+variable "react_aws_github_repo" {
+  description = "GitHub repository (owner/repo) for the static frontend pipeline."
+  type        = string
+  default     = "tengsihai/react-aws"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.react_aws_github_repo))
+    error_message = "react_aws_github_repo must look like owner/repo."
+  }
+}
+
+variable "react_aws_site_bucket_arns" {
+  description = "Buckets (bucket ARN only) the react-aws role may publish static content to."
+  type        = list(string)
+  default     = []
+}
+
+variable "react_aws_distribution_arns" {
+  description = "CloudFront distribution ARNs the react-aws role may invalidate."
+  type        = list(string)
+  default     = []
+}
+
+variable "react_aws_site_kms_key_arns" {
+  description = "KMS key ARNs encrypting the react-aws site bucket. PutObject with SSE-KMS needs GenerateDataKey; GetObject needs Decrypt."
+  type        = list(string)
+  default     = []
+}
+
+variable "lambda_aws_github_repo" {
+  description = "GitHub repository (owner/repo) for the Lambda + API Gateway pipeline."
+  type        = string
+  default     = "tengsihai/lambda-aws"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.lambda_aws_github_repo))
+    error_message = "lambda_aws_github_repo must look like owner/repo."
+  }
+}
+
+variable "lambda_aws_artifact_bucket_arns" {
+  description = "S3 buckets (bucket ARN only) the lambda-aws role may read/write SAM artifacts from. Include the aws-sam-cli-managed-default-* prefix when using sam deploy --resolve-s3."
+  type        = list(string)
+  default     = []
+}
+
+variable "lambda_execution_role_arns" {
+  description = "Lambda execution role ARNs the lambda-aws deploy role may pass to lambda.amazonaws.com. These roles are created by the environment roots in this repository."
+  type        = list(string)
+  default     = []
 }
 
 variable "tags" {
