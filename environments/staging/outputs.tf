@@ -38,6 +38,11 @@ output "lambda_security_group_id" {
   value       = module.vpc.additional_security_group_ids["lambda"]
 }
 
+output "lambda_execution_role_arn" {
+  description = "Execution role passed to Lambda functions by the lambda-aws pipeline."
+  value       = aws_iam_role.lambda_execution.arn
+}
+
 output "private_route_table_ids" {
   description = "Per-AZ private route table IDs."
   value       = module.vpc.private_route_table_ids
