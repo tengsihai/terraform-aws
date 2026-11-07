@@ -161,6 +161,29 @@ variable "lambda_execution_role_arns" {
   default     = []
 }
 
+variable "mysql_aws_github_repo" {
+  description = "GitHub repository (owner/repo) for the Flyway migration pipeline."
+  type        = string
+  default     = "tengsihai/mysql-aws"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.mysql_aws_github_repo))
+    error_message = "mysql_aws_github_repo must look like owner/repo."
+  }
+}
+
+variable "mysql_aws_bastion_asg_names" {
+  description = "Optional map of environment to bastion ASG name. Defaults to platform-<env>-bastion, matching modules/bastion."
+  type        = map(string)
+  default     = {}
+}
+
+variable "mysql_aws_bastion_tag_key" {
+  description = "Instance tag key used to restrict SSM StartSession to the bastion. The tag value is the bastion ASG name."
+  type        = string
+  default     = "Bastion"
+}
+
 variable "tags" {
   description = "Tags applied to every role."
   type        = map(string)

@@ -809,6 +809,20 @@ locals {
     "repo:${var.lambda_aws_github_repo}:environment:",
     "repo:${split("/", var.lambda_aws_github_repo)[0]}@*/${split("/", var.lambda_aws_github_repo)[1]}@*:environment:",
   ]
+
+  mysql_aws_subject_prefixes = [
+    "repo:${var.mysql_aws_github_repo}:environment:",
+    "repo:${split("/", var.mysql_aws_github_repo)[0]}@*/${split("/", var.mysql_aws_github_repo)[1]}@*:environment:",
+  ]
+
+  # 跳板机的 ASG 名和 Bastion 标签值都来自 environments/<env> 的 name 前缀。
+  mysql_aws_bastion_names = {
+    for env in var.environments : env => lookup(
+      var.mysql_aws_bastion_asg_names,
+      env,
+      "platform-${env}-bastion",
+    )
+  }
 }
 
 data "aws_iam_policy_document" "react_aws_trust" {
@@ -861,6 +875,33 @@ data "aws_iam_policy_document" "lambda_aws_trust" {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
       values   = [for prefix in local.lambda_aws_subject_prefixes : "${prefix}${each.value}"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "mysql_aws_migrate_trust" {
+  for_each = toset(var.environments)
+
+  statement {
+    sid     = "GitHubActionsRdsMigrate"
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = [for prefix in local.mysql_aws_subject_prefixes : "${prefix}${each.value}"]
     }
   }
 }
@@ -1163,4 +1204,103 @@ resource "aws_iam_role_policy" "lambda_aws_deploy" {
   name   = "lambda-aws-deploy"
   role   = aws_iam_role.lambda_aws_deploy[each.value].id
   policy = data.aws_iam_policy_document.lambda_aws_deploy.json
+}
+
+###############################################################################
+# mysql-aws：Flyway 迁移（读 RDS 托管口令 + SSM 端口转发 + 调整跳板机容量）
+###############################################################################
+
+data "aws_iam_policy_document" "mysql_aws_migrate" {
+  #checkov:skip=CKV_AWS_356:rds:DescribeDBInstances, autoscaling:DescribeAutoScalingGroups, and the ssm Describe actions do not support resource-level permissions. Every write action is scoped to the bastion ASG, Bastion-tagged instances, or this role's own sessions.
+  for_each = toset(var.environments)
+
+  statement {
+    sid    = "ReadRdsMasterSecret"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret",
+    ]
+    resources = ["arn:${local.partition}:secretsmanager:${var.aws_region}:${local.account_id}:secret:rds!db-*"]
+  }
+
+  statement {
+    sid       = "ResolveRdsEndpointAndSecretArn"
+    effect    = "Allow"
+    actions   = ["rds:DescribeDBInstances"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "InspectBastionCapacity"
+    effect    = "Allow"
+    actions   = ["autoscaling:DescribeAutoScalingGroups"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "ScaleBastionOnly"
+    effect    = "Allow"
+    actions   = ["autoscaling:UpdateAutoScalingGroup"]
+    resources = ["arn:${local.partition}:autoscaling:${var.aws_region}:${local.account_id}:autoScalingGroup:*:autoScalingGroupName/${local.mysql_aws_bastion_names[each.value]}"]
+  }
+
+  statement {
+    sid       = "StartSessionOnTaggedBastionOnly"
+    effect    = "Allow"
+    actions   = ["ssm:StartSession"]
+    resources = ["arn:${local.partition}:ec2:${var.aws_region}:${local.account_id}:instance/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "ssm:resourceTag/${var.mysql_aws_bastion_tag_key}"
+      values   = [local.mysql_aws_bastion_names[each.value]]
+    }
+  }
+
+  statement {
+    sid       = "PortForwardingDocumentOnly"
+    effect    = "Allow"
+    actions   = ["ssm:StartSession"]
+    resources = ["arn:${local.partition}:ssm:${var.aws_region}::document/AWS-StartPortForwardingSessionToRemoteHost"]
+  }
+
+  statement {
+    sid    = "ManageOwnSsmSessions"
+    effect = "Allow"
+    actions = [
+      "ssm:TerminateSession",
+      "ssm:ResumeSession",
+    ]
+    resources = ["arn:${local.partition}:ssm:${var.aws_region}:${local.account_id}:session/*"]
+  }
+
+  statement {
+    sid    = "InspectSsmTargets"
+    effect = "Allow"
+    actions = [
+      "ssm:DescribeInstanceInformation",
+      "ssm:DescribeSessions",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role" "mysql_aws_migrate" {
+  for_each = toset(var.environments)
+
+  name                 = "rds-migrate-${each.value}"
+  description          = "OIDC role for mysql-aws Flyway migrations (${each.value}): read the RDS-managed master secret, port-forward through the bastion, and adjust bastion capacity."
+  assume_role_policy   = data.aws_iam_policy_document.mysql_aws_migrate_trust[each.value].json
+  max_session_duration = 3600
+
+  tags = merge(local.tags, { Role = "mysql-aws-migrate", Environment = each.value })
+}
+
+resource "aws_iam_role_policy" "mysql_aws_migrate" {
+  for_each = toset(var.environments)
+
+  name   = "rds-migrate"
+  role   = aws_iam_role.mysql_aws_migrate[each.value].id
+  policy = data.aws_iam_policy_document.mysql_aws_migrate[each.value].json
 }
