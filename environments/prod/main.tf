@@ -49,6 +49,27 @@ resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+# 函数要进 VPC 连 RDS：创建/删除 ENI 的权限由 AWS 托管策略提供。
+resource "aws_iam_role_policy_attachment" "lambda_vpc_execution" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+# 只允许读取 RDS 托管的主用户密钥，不授予其他 Secrets Manager 权限。
+resource "aws_iam_role_policy" "lambda_rds_secret" {
+  name = "read-rds-master-secret"
+  role = aws_iam_role.lambda_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = module.rds.master_user_secret_arn
+    }]
+  })
+}
+
 module "logging" {
   source = "../../modules/logging-s3"
 

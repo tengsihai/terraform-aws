@@ -126,7 +126,7 @@ feat/xxx ──PR──► dev ──PR──► staging ──PR──► prod 
 | 静态站点桶 | `<prefix>-site-<account>-<region>` | 同左 | 同左 |
 | CloudFront 价格等级 | PriceClass_200 | 同左 | 同左 |
 | SPA 回退（403/404 → index.html） | 是 | 是 | 是 |
-| 预期 plan | 74 add | 73 add | 73 add |
+| 预期 plan | 76 add | 75 add | 75 add |
 
 ## 静态站点（CloudFront + S3）
 
@@ -323,6 +323,7 @@ Checkov 的 severity 元数据只在接入 Prisma Cloud 平台时才完整，离
 | 静态站点加密 | SSE-KMS（CMK 自动轮转）；CloudFront 仅在 `aws:SourceArn` 匹配本分发时可 Decrypt |
 | 静态站点传输 | 查看器强制跳转 HTTPS，最低 TLS 1.2；统一注入 HSTS / DENY / nosniff / referrer 响应头 |
 | 静态站点审计 | 源站桶的 S3 服务端访问日志写入加密日志桶 |
+| Lambda 执行角色 | 只有 CloudWatch Logs、VPC ENI 和读取 RDS 主用户密钥的权限；由本仓库创建，外部流水线只能 PassRole |
 
 ## 文档
 
