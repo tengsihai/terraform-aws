@@ -157,6 +157,11 @@ jobs:
           path: reports/${{ env.ENVIRONMENT }}/
           retention-days: 5
           if-no-files-found: ignore
+          # 重跑工作流时覆盖上一次 attempt 的同名工件。否则失败 attempt 留下的
+          # 残缺工件会和新工件同名并存，apply 按名字下载时可能拿到旧的
+          # （run 42448248350 重跑后即出现：apply 读到 759 字节的旧工件，
+          # 报 "artifact is missing tfplan"）。
+          overwrite: true
 
       - name: Comment plan on pull request
         if: github.event_name == 'pull_request' && steps.plan.outcome == 'success'
