@@ -28,6 +28,11 @@ jobs:
     name: drift (${{ matrix.environment }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # 只读 plan 同样要拿 state 锁。与 apply、环境分支上的 push plan 共用
+    # <环境> 的 state group：apply 在跑时排队等待，而不是抢锁到 -lock-timeout 超时。
+    concurrency:
+      group: terraform-state-${{ matrix.environment }}
+      cancel-in-progress: false
     environment: terraform-plan
     strategy:
       fail-fast: false
@@ -68,7 +73,7 @@ jobs:
             -var-file=env.tfvars \
             -input=false \
             -no-color \
-            -lock-timeout=5m \
+            -lock-timeout=15m \
             -detailed-exitcode \
             -out="${PWD}/${report_dir}/drift.tfplan" \
             > "${report_dir}/drift.txt" 2>&1
