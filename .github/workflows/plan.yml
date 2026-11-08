@@ -19,9 +19,13 @@ permissions:
   id-token: write # GitHub OIDC -> AWS role
   pull-requests: write # sticky plan comment
 
+# 环境分支上的 push plan 与 apply 共用 <环境> 的 state group：
+# apply 动辄十几分钟，push plan 若并行去抢 state 锁，只会等到 -lock-timeout 超时
+# 而失败（见 run 42448248350）。排队等 apply 结束才是正确行为，且绝不互相取消。
+# PR plan 只产出评审评论，与环境 state 无关，仍按 ref 独立运行、互相取消。
 concurrency:
-  group: terraform-plan-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'pull_request' && format('terraform-plan-{0}', github.ref) || format('terraform-state-{0}', github.ref_name) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   TERRAFORM_VERSION: "1.13.5"
@@ -99,7 +103,7 @@ jobs:
             -var-file=env.tfvars \
             -input=false \
             -no-color \
-            -lock-timeout=5m \
+            -lock-timeout=15m \
             -detailed-exitcode \
             -out="${plan_file}" \
             2>&1 | tee "${report_dir}/plan-output.txt"
@@ -153,6 +157,11 @@ jobs:
           path: reports/${{ env.ENVIRONMENT }}/
           retention-days: 5
           if-no-files-found: ignore
+          # 重跑工作流时覆盖上一次 attempt 的同名工件。否则失败 attempt 留下的
+          # 残缺工件会和新工件同名并存，apply 按名字下载时可能拿到旧的
+          # （run 42448248350 重跑后即出现：apply 读到 759 字节的旧工件，
+          # 报 "artifact is missing tfplan"）。
+          overwrite: true
 
       - name: Comment plan on pull request
         if: github.event_name == 'pull_request' && steps.plan.outcome == 'success'
