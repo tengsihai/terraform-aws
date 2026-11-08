@@ -25,6 +25,7 @@ fork 出来的 PR 拿不到 OIDC token，所以外部贡献者无法借此访问
 | `aws_iam_role.apply["prod"]` | `repo:<owner>/<repo>:environment:prod` | 同上（`environments` 含 prod 时才创建） |
 | `aws_iam_role.react_aws_deploy["dev"]` | `repo:tengsihai/react-aws:environment:dev` | 站点桶对象读写 + CloudFront invalidation，不共用基础设施角色 |
 | `aws_iam_role.lambda_aws_deploy["dev"]` | `repo:tengsihai/lambda-aws:environment:dev` | SAM/CloudFormation + Lambda + API Gateway；`iam:PassRole` 只允许执行角色 ARN |
+| `aws_iam_role.mysql_aws_migrate["dev"]` | `repo:tengsihai/mysql-aws:environment:dev` | 读取 RDS 托管主用户密钥、SSM 端口转发到跳板机、临时调整跳板机 ASG 容量 |
 
 ### 一个工程一个部署角色
 
@@ -35,6 +36,9 @@ fork 出来的 PR 拿不到 OIDC token，所以外部贡献者无法借此访问
 - `lambda-aws-deploy-<env>`：Lambda / API Gateway 作用在账户与区域内，
   SAM 产物桶由 `lambda_aws_artifact_bucket_arns` 指定，
   `iam:PassRole` 只作用于 `lambda_execution_role_arns`。
+- `rds-migrate-<env>`：只信任 `mysql-aws`，权限限定在 RDS 托管密钥
+  （`rds!db-*`）、本环境跳板机 ASG（`platform-<env>-bastion`）、
+  带 `Bastion=<ASG 名>` 标签的实例和端口转发文档。
 
 外部流水线在 GitHub Environment 里配置自己的角色 ARN，不要复用
 `terraform-apply-dev`。`environments` 里的每个环境都会为两者各建一个角色。
@@ -79,6 +83,26 @@ terraform apply bootstrap.tfplan
 
 把输出的 `plan_role_arn` 和 `apply_role_arns` 填进 GitHub 的 Environment variables，
 见 [docs/CI-CD.md](../docs/CI-CD.md) 第 2.3 节。
+
+外部工程各自使用自己的角色输出：
+
+| 输出 | 填到哪里 |
+| --- | --- |
+| `react_aws_deploy_role_arns` | `react-aws` 对应环境的 `AWS_DEPLOY_ROLE_ARN` |
+| `lambda_aws_deploy_role_arns` | `lambda-aws` 对应环境的 `AWS_ROLE_ARN` |
+| `mysql_aws_migrate_role_arns` | `mysql-aws` 对应环境的 `AWS_ROLE_ARN` |
+
+### 接管已有角色
+
+如果某个环境已经用手工/脚本创建过同名角色（例如 `rds-migrate-dev`），
+先 import 再 apply，避免 Terraform 试图重新创建：
+
+```bash
+terraform import 'aws_iam_role.mysql_aws_migrate["dev"]' rds-migrate-dev
+terraform import 'aws_iam_role_policy.mysql_aws_migrate["dev"]' rds-migrate-dev:rds-migrate
+```
+
+import 后先 `terraform plan`，确认只有描述、标签或策略内容的变化，再 apply。
 
 ## 前置条件
 
