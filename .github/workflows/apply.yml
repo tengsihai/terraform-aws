@@ -51,7 +51,9 @@ jobs:
     # 绝不取消进行中的 apply：半途而废的 apply 比排队等待糟糕得多。
     concurrency:
       # concurrency.group 不支持 env 上下文，这里直接用 github 上下文。
-      group: terraform-apply-${{ github.event.workflow_run.head_branch }}
+      # 与 plan.yml 里环境分支上的 push plan（以及 drift-detection）共用
+      # <环境> 的 state group，保证同一份 state 同一时间只有一个写入者。
+      group: terraform-state-${{ github.event.workflow_run.head_branch }}
       cancel-in-progress: false
 
     steps:
@@ -224,7 +226,7 @@ jobs:
             -input=false \
             -no-color \
             -auto-approve \
-            -lock-timeout=5m \
+            -lock-timeout=15m \
             "${PLAN_FILE}"
 
       - name: Write run summary
